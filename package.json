@@ -7,16 +7,27 @@
     "start": "astro dev",
     "build": "astro check && astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "backend": "pkgx pocketbase serve --dir pb_data --migrationsDir pb_migrations"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.2",
+    "@astrojs/react": "^3.6.2",
+    "@nanostores/react": "^0.7.3",
     "@stablelib/base64": "^2.0.0",
     "@thai/html": "npm:@jsr/thai__html@0.1.0-alpha.0",
+    "@types/react": "^18.3.8",
+    "@types/react-dom": "^18.3.0",
     "astro": "^4.14.2",
     "buffer-es6": "^4.9.3",
+    "nanostores": "^0.11.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "speechmatics": "^4.0.0",
     "typescript": "^5.5.4"
   },
-  "packageManager": "pnpm@9.7.1+sha512.faf344af2d6ca65c4c5c8c2224ea77a81a5e8859cbc4e06b1511ddce2f0151512431dd19e6aff31f2c6a8f5f2aced9bd2273e1fed7dd4de1868984059d2c4247"
+  "packageManager": "pnpm@9.7.1+sha512.faf344af2d6ca65c4c5c8c2224ea77a81a5e8859cbc4e06b1511ddce2f0151512431dd19e6aff31f2c6a8f5f2aced9bd2273e1fed7dd4de1868984059d2c4247",
+  "devDependencies": {
+    "@types/bun": "^1.1.10"
+  }
 }

@@ -1,0 +1,10 @@
+---
+import { AudioSender } from "../components/AudioSender";
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout title="Audio Sender">
+  <div class="container mt-5">
+    <AudioSender client:only="react" />
+  </div>
+</Layout>
