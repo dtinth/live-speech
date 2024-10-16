@@ -4,6 +4,7 @@ import KeyvSqlite from "@keyv/sqlite";
 import Fastify from "fastify";
 import Keyv from "keyv";
 import { uuidv7 } from "uuidv7";
+import { pubsub } from "../src/pubsub";
 
 const keyvStore = new KeyvSqlite("sqlite://.data/database.sqlite");
 
@@ -12,53 +13,29 @@ function getRoomMetadataDb(room: string) {
   return new Keyv({ store: keyvStore, namespace: `room_${room}` });
 }
 
-type ListenerSet = Set<(message: string) => void>;
-const listenerSetMap = new Map<string, ListenerSet>();
-
-function getListenerSet(room: string) {
-  if (!listenerSetMap.has(room)) {
-    listenerSetMap.set(room, new Set());
-  }
-  return listenerSetMap.get(room)!;
-}
-
 const fastify = Fastify({
   logger: true,
 });
 await fastify.register(Websocket);
 await fastify.register(Cors);
 
-function broadcast(listeners: ListenerSet, method: string, params: any) {
-  const payload = JSON.stringify({ method, params });
-  for (const listener of listeners) {
-    try {
-      listener(payload);
-    } catch (error) {
-      console.error(error);
-    }
-  }
-}
-
 class Utterance {
   id = uuidv7();
   start = new Date().toISOString();
   buffers: Buffer[] = [];
   constructor(public room: string) {
-    broadcast(getListenerSet(room), "audio_start", { id: this.id });
+    pubsub.publish(room, "audio_start", { id: this.id });
     getRoomMetadataDb(this.room).set(this.id, {
       start: this.start,
     });
-    {
-      const listeners = getListenerSet(`public/${room}`);
-      broadcast(listeners, "updated", { id: this.id });
-    }
+    pubsub.publish(`public/${room}`, "updated", { id: this.id });
   }
   addAudio(base64: string) {
     this.buffers.push(Buffer.from(base64, "base64"));
-    broadcast(getListenerSet(this.room), "audio_data", { id: this.id, base64 });
+    pubsub.publish(this.room, "audio_data", { id: this.id, base64 });
   }
   finish() {
-    broadcast(getListenerSet(this.room), "audio_finish", { id: this.id });
+    pubsub.publish(this.room, "audio_finish", { id: this.id });
     const buffer = Buffer.concat(this.buffers);
     getRoomMetadataDb(this.room).set(this.id, {
       start: this.start,
@@ -66,10 +43,7 @@ class Utterance {
       length: buffer.length,
     });
     audioDb.set(this.id, buffer.toString("base64"));
-    {
-      const listeners = getListenerSet(`public/${this.room}`);
-      broadcast(listeners, "updated", { id: this.id });
-    }
+    pubsub.publish(`public/${this.room}`, "updated", { id: this.id });
   }
 }
 
@@ -127,14 +101,10 @@ fastify.get("/rooms/:room/events", { websocket: true }, (connection, req) => {
     connection.close();
     return;
   }
-  const listener = (message: string) => {
+  const unsubscribe = pubsub.subscribe(room, (message) => {
     connection.send(message);
-  };
-  const listeners = getListenerSet(room);
-  listeners.add(listener);
-  connection.on("close", () => {
-    listeners.delete(listener);
   });
+  connection.on("close", unsubscribe);
 });
 
 fastify.get(
@@ -142,14 +112,10 @@ fastify.get(
   { websocket: true },
   (connection, req) => {
     const room = (req.params as { room: string }).room;
-    const listener = (message: string) => {
+    const unsubscribe = pubsub.subscribe(`public/${room}`, (message) => {
       connection.send(message);
-    };
-    const listeners = getListenerSet(`public/${room}`);
-    listeners.add(listener);
-    connection.on("close", () => {
-      listeners.delete(listener);
     });
+    connection.on("close", unsubscribe);
   }
 );
 
@@ -192,8 +158,9 @@ fastify.patch("/rooms/:room/items/:id", async (req) => {
     ],
   };
   await db.set(id, newValue);
-  const listeners = getListenerSet(`public/${room}`);
-  broadcast(listeners, "updated", { id });
+  // const listeners = getListenerSet(`public/${room}`);
+  // broadcast(listeners, "updated", { id });
+  pubsub.publish(`public/${room}`, "updated", { id });
   return newValue;
 });
 
@@ -204,9 +171,8 @@ fastify.post("/rooms/:room/items/:id/partial", async (req) => {
   }
   const room = (req.params as { room: string }).room;
   const id = (req.params as { id: string }).id;
-  const listeners = getListenerSet(`public/${room}`);
   const body = req.body as { transcript: string };
-  broadcast(listeners, "partial_transcript", {
+  pubsub.publish(`public/${room}`, "partial_transcript", {
     id,
     transcript: body.transcript,
   });
