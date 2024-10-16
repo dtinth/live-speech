@@ -13,4 +13,10 @@ export const db = {
   roomItems(room: Room): Partition {
     return persistence.getPartition(`room_${room.name}`);
   },
+  roomPartials(room: Room): Partition {
+    return persistence.getPartition(`partials_${room.name}`);
+  },
+  roomLogs(room: Room): Partition {
+    return persistence.getPartition(`logs_${room.name}`);
+  },
 };

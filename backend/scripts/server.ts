@@ -1,9 +1,11 @@
 import Cors from "@fastify/cors";
 import Websocket from "@fastify/websocket";
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest } from "fastify";
 import { randomBytes } from "node:crypto";
 import { uuidv7 } from "uuidv7";
 import { db } from "../src/db";
+import { getItem, getItems, updateItem } from "../src/itemOperations";
+import { publicBroadcast } from "../src/publicBroadcast";
 import { pubsub } from "../src/pubsub";
 import { Room } from "../src/room";
 import { Utterance } from "../src/utterance";
@@ -44,20 +46,40 @@ fastify.get("/admin/rooms", async (req, reply) => {
   return rooms;
 });
 
+async function checkRoomKey(room: Room, key: string) {
+  const roomInfo = await db.rooms.get(room.name);
+  if (!roomInfo) {
+    return false;
+  }
+  return roomInfo.roomKey === key;
+}
+
+async function validateRoomKey(
+  req: FastifyRequest,
+  room: Room
+): Promise<boolean> {
+  const authHeader = req.headers["authorization"];
+  if (!authHeader) return false;
+
+  const [bearer, key] = authHeader.split(" ");
+  if (bearer !== "Bearer" || !key) return false;
+
+  return checkRoomKey(room, key);
+}
+
 fastify.get(
   "/rooms/:room/audioIngest",
   { websocket: true },
-  (connection, req) => {
-    const token = (req.query as Record<string, string>).token;
+  async (connection, req) => {
+    const key = (req.query as { key: string }).key;
     const room = new Room((req.params as { room: string }).room);
-    if (token !== process.env["SERVICE_TOKEN"]) {
+    if (!(await checkRoomKey(room, key))) {
       connection.send(JSON.stringify({ error: "Invalid token" }));
       connection.close();
       return;
     }
 
     let currentUtterance: Utterance | undefined;
-
     connection.on("message", async (message) => {
       try {
         const data = JSON.parse(message.toString());
@@ -99,14 +121,31 @@ fastify.get(
 fastify.get(
   "/rooms/:room/audioEvents",
   { websocket: true },
-  (connection, req) => {
-    const token = (req.query as Record<string, string>).token;
+  async (connection, req) => {
+    const key = (req.query as Record<string, string>).key;
     const room = new Room((req.params as { room: string }).room);
-    if (token !== process.env["SERVICE_TOKEN"]) {
-      connection.send(JSON.stringify({ error: "Invalid token" }));
+    if (!(await checkRoomKey(room, key))) {
+      connection.send(JSON.stringify({ error: "Invalid room key" }));
       connection.close();
       return;
     }
+    connection.on("message", async (message) => {
+      try {
+        const data = JSON.parse(message.toString());
+        if (data.method === "submit_partial_transcript") {
+          const { id, transcript } = data.params;
+          publicBroadcast(room, "partial_transcript", {
+            id,
+            transcript,
+          });
+          connection.send(
+            JSON.stringify({ id: data.id, result: { ok: true } })
+          );
+        }
+      } catch (error) {
+        req.log.error(error);
+      }
+    });
     const unsubscribe = pubsub.subscribe(room.audioTopic, (message) => {
       connection.send(message);
     });
@@ -128,54 +167,31 @@ fastify.get(
 
 fastify.get("/rooms/:room/items", async (req) => {
   const room = new Room((req.params as { room: string }).room);
-  const output = [];
-  for await (const [id, data] of db.roomItems(room)) {
-    output.push({ id, ...data });
-  }
-  return output;
+  const items = await getItems(room);
+  return items;
 });
 
-fastify.get("/rooms/:room/items/:id", async (req) => {
+fastify.get("/rooms/:room/items/:id", async (req, reply) => {
   const room = new Room((req.params as { room: string }).room);
   const id = (req.params as { id: string }).id;
-  return { ...(await db.roomItems(room).get(id)), id };
-});
-
-fastify.patch("/rooms/:room/items/:id", async (req) => {
-  const token = req.headers["authorization"]!.split(" ")[1];
-  if (token !== process.env["SERVICE_TOKEN"]) {
+  const item = await getItem(room, id);
+  if (!item) {
+    reply.status(404).send({ error: "Not found" });
     return;
   }
+  return item;
+});
+
+fastify.patch("/rooms/:room/items/:id", async (req, reply) => {
   const room = new Room((req.params as { room: string }).room);
+  if (!(await validateRoomKey(req, room))) {
+    reply.code(401).send({ error: "Invalid room key" });
+    return;
+  }
   const id = (req.params as { id: string }).id;
-  const value = await db.roomItems(room).get(id);
   const body = req.body as any;
-  const newValue = {
-    ...value,
-    ...body,
-    changes: [
-      ...(value.changes ?? []),
-      { payload: body, time: new Date().toISOString() },
-    ],
-  };
-  await db.roomItems(room).set(id, newValue);
-  pubsub.publish(room.publicTopic, "updated", { id });
+  const newValue = await updateItem(room, id, body);
   return newValue;
-});
-
-fastify.post("/rooms/:room/items/:id/partial", async (req) => {
-  const token = req.headers["authorization"]!.split(" ")[1];
-  if (token !== process.env["SERVICE_TOKEN"]) {
-    return;
-  }
-  const room = new Room((req.params as { room: string }).room);
-  const id = (req.params as { id: string }).id;
-  const body = req.body as { transcript: string };
-  pubsub.publish(room.publicTopic, "partial_transcript", {
-    id,
-    transcript: body.transcript,
-  });
-  return { ok: true };
 });
 
 fastify.get("/pcm/:id", async (req, reply) => {

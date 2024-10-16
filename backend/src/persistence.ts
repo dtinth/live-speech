@@ -4,7 +4,7 @@ import Keyv from "keyv";
 export class Partition {
   private keyv: Keyv;
 
-  constructor(store: any, partitionKey: string) {
+  constructor(store: any, private partitionKey: string) {
     this.keyv = new Keyv({ store, namespace: partitionKey });
   }
 
@@ -17,6 +17,7 @@ export class Partition {
   }
 
   async *[Symbol.asyncIterator]() {
+    console.log(this.partitionKey, this.keyv.opts.namespace);
     yield* (this.keyv.iterator as any)() as AsyncIterable<[string, any]>;
   }
 }

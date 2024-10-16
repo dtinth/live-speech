@@ -2,14 +2,14 @@ import { spawn } from "child_process";
 import { createInterface } from "node:readline";
 import { Duplex, PassThrough } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { ofetch } from "ofetch";
 import ReconnectingWebSocket from "reconnecting-websocket";
+import { getRoomConfig } from "../src/client";
 
-const room = "hello";
+const roomConfig = getRoomConfig();
 
-const api = ofetch.create({
-  baseURL: "http://localhost:10300",
-});
+const websocket = new ReconnectingWebSocket(
+  `http://localhost:10300/rooms/${roomConfig.roomId}/audioEvents?key=${roomConfig.roomKey}`
+);
 
 function isAbortError(e: any) {
   return e.name === "AbortError";
@@ -70,15 +70,15 @@ class Transcription {
             source as NodeJS.ReadableStream
           )) {
             console.log("   -", event.text, event.isFinal);
-            api(`/rooms/${room}/items/${this.id}/partial`, {
-              method: "POST",
-              headers: {
-                authorization: `Bearer ${process.env["SERVICE_TOKEN"]}`,
-              },
-              body: {
-                transcript: event.text,
-              },
-            });
+            websocket.send(
+              JSON.stringify({
+                method: "submit_partial_transcript",
+                params: {
+                  id: this.id,
+                  transcript: event.text,
+                },
+              })
+            );
           }
         }
       );
@@ -94,9 +94,6 @@ class Transcription {
   }
 }
 
-const websocket = new ReconnectingWebSocket(
-  `http://localhost:10300/rooms/${room}/audioEvents?token=${process.env["SERVICE_TOKEN"]}`
-);
 websocket.onopen = () => {
   console.log("Connected to backend");
 };

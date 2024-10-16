@@ -8,7 +8,11 @@
     "build": "astro check && astro build",
     "preview": "astro preview",
     "astro": "astro",
-    "backend": "pkgx pocketbase serve --dir pb_data --migrationsDir pb_migrations"
+    "server": "tsx --env-file=.env backend/scripts/server.ts",
+    "dev:server": "tsx --env-file=.env --watch backend/scripts/server.ts",
+    "createRoom": "tsx --env-file=.env backend/scripts/createRoom.ts",
+    "batchTranscriber": "tsx --env-file=.env backend/scripts/batchTranscriber.ts",
+    "partialTranscriber": "tsx --env-file=.env backend/scripts/partialTranscriber.ts"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.2",
@@ -31,7 +35,8 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "reconnecting-websocket": "^4.4.0",
-    "speechmatics": "^4.0.0",
+    "sqlite3": "^5.1.7",
+    "tsx": "^4.19.1",
     "typescript": "^5.5.4",
     "uuidv7": "^1.0.2"
   },

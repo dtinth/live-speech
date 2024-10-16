@@ -7,7 +7,9 @@ import {
   type GenerationConfig,
   type UsageMetadata,
 } from "@google/generative-ai";
-import { ofetch } from "ofetch";
+import { createRoomApi, getRoomConfig, publicApi } from "../src/client";
+
+const api = createRoomApi(getRoomConfig());
 
 const apiKey = process.env["GEMINI_API_KEY"]!;
 const genAI = new GoogleGenerativeAI(apiKey);
@@ -115,12 +117,7 @@ function postProcess(text: string) {
     .trim();
 }
 
-const api = ofetch.create({
-  baseURL: "http://localhost:10300",
-});
-
 async function main() {
-  const room = "hello";
   const list = await api<
     {
       id: string;
@@ -129,7 +126,8 @@ async function main() {
       length: number;
       transcript?: string;
     }[]
-  >(`/rooms/${room}/items`);
+  >(`/items`);
+
   const validItems = list.filter((item) => item.length > 0);
   validItems.sort((a, b) => a.start.localeCompare(b.start));
 
@@ -153,7 +151,7 @@ async function main() {
   console.log(result);
   let { transcript } = JSON.parse(result.text) as { transcript: string };
   transcript = postProcess(transcript);
-  await api(`/rooms/${room}/items/${untranscribed.id}`, {
+  await api(`/items/${untranscribed.id}`, {
     method: "PATCH",
     headers: {
       authorization: `Bearer ${process.env["SERVICE_TOKEN"]}`,
@@ -167,7 +165,7 @@ async function main() {
 }
 
 async function loadAudio(id: string) {
-  return api(`/pcm/${id}`, { responseType: "blob" }).then((r) =>
+  return publicApi(`/pcm/${id}`, { responseType: "blob" }).then((r) =>
     r.arrayBuffer()
   );
 }

@@ -1,7 +1,14 @@
 import { useStore } from "@nanostores/react";
 import { encode } from "@stablelib/base64";
-import { atom } from "nanostores";
+import { atom, computed } from "nanostores";
 import ReconnectingWebSocket from "reconnecting-websocket";
+import {
+  $activationThreshold,
+  $deactivationThreshold,
+  $decayEasing,
+  $maxLength as $maxAudioLength,
+  $minimumPeak as $minimumLevel,
+} from "../knobs";
 import { log } from "../logbus";
 import { LogViewer } from "./LogViewer";
 
@@ -10,15 +17,31 @@ function getAudioContext() {
   return (audioContext ??= new AudioContext({ sampleRate: 16000 }));
 }
 
+interface BackendContext {
+  backend: string;
+  room: string;
+  key: string;
+}
+
 export function AudioSender() {
   const params = new URLSearchParams(window.location.search);
+
+  const backend = params.get("backend");
+  const room = params.get("room");
+  const key = params.get("key");
+  if (!backend || !room || !key) {
+    return <div>Missing parameters</div>;
+  }
 
   const deviceId = params.get("deviceId");
   if (!deviceId) {
     return <AudioDeviceSelector />;
   }
 
-  return <AudioSenderView deviceId={deviceId} />;
+  const backendContext: BackendContext = { backend, room, key };
+  return (
+    <AudioSenderView deviceId={deviceId} backendContext={backendContext} />
+  );
 }
 
 const $devices = atom<MediaDeviceInfo[]>([]);
@@ -55,7 +78,9 @@ function AudioDeviceSelector() {
       <ul>
         {devices.map((device) => (
           <li key={device.deviceId}>
-            <a href={`?deviceId=${device.deviceId}`}>{device.label}</a>
+            <a href={`${location.search}&deviceId=${device.deviceId}`}>
+              {device.label}
+            </a>
           </li>
         ))}
       </ul>
@@ -64,26 +89,36 @@ function AudioDeviceSelector() {
 }
 
 function createAudioSenderController(options: {
+  backendContext: BackendContext;
   deviceId: string;
   log: (message: string) => void;
 }) {
-  const { log } = options;
+  const { log, backendContext } = options;
   const $level = atom(0);
-  const $max = atom(0);
+  const $realMax = atom(0);
+  const $effectiveMax = computed(
+    [$realMax, $minimumLevel],
+    (realMax, minimumLevel) => Math.max(realMax, minimumLevel / 100)
+  );
   const $current = atom(0);
   const $active = atom<string | null>(null);
-  const $socketActive = atom(false);
+  const $socketStatus = atom<"disconnected" | "authenticating" | "connected">(
+    "disconnected"
+  );
   const unackedMessages = new Map<string, any>();
   const $pendingEventCount = atom(0);
-  let currentLength = 0;
-  let socketOpened = false;
+  const $started = atom(false);
+
+  let currentBlockCount = 0;
   type SocketEvent =
-    | { method: "start"; params: { id: string } }
+    | { method: "start" }
     | { method: "audio"; params: { data: string } }
     | { method: "stop" };
   let onEvent: (event: SocketEvent) => void = () => {};
 
   async function start() {
+    if ($started.get()) return;
+    $started.set(true);
     await Promise.all([startAudio(), startWebsocket()]);
   }
 
@@ -94,7 +129,7 @@ function createAudioSenderController(options: {
       class AudioSenderProcessor extends AudioWorkletProcessor {
         constructor() {
           super();
-          this.buffer = new Float32Array(1280);
+          this.buffer = new Float32Array(1024);
           this.bufferIndex = 0;
         }
 
@@ -155,34 +190,42 @@ function createAudioSenderController(options: {
         }
         const level = Math.sqrt(sum / data.length) * Math.sqrt(2);
         $level.set(level);
-        if (level > $max.get()) {
-          $max.set(level);
+        if (level > $realMax.get()) {
+          $realMax.set(level);
         } else {
-          $max.set($max.get() * 0.995);
+          $realMax.set($realMax.get() * 0.995);
         }
         if (level > $current.get()) {
           $current.set(level);
         } else if ($active.get()) {
-          const progress = Math.min(1, currentLength / 250);
+          const maxSamples = $maxAudioLength.get() * 16000;
+          const maxBlocks = maxSamples / 1024;
+          const progress =
+            Math.min(1, currentBlockCount / maxBlocks) ** $decayEasing.get();
           const decayRate = 0.99 - progress * 0.5;
           $current.set($current.get() * decayRate);
         } else {
           $current.set(level);
         }
-        const threshold = $max.get() * 0.25;
         if (!$active.get()) {
+          const threshold = $effectiveMax.get() * $activationThreshold.get();
           if ($current.get() > threshold) {
             const id = `au${Date.now()}`;
             $active.set(id);
-            currentLength = 0;
-            onEvent({ method: "start", params: { id } });
+            currentBlockCount = 0;
+            onEvent({ method: "start" });
+            log(`Utterance started`);
           }
         } else if ($active.get()) {
+          const threshold = $effectiveMax.get() * $deactivationThreshold.get();
           if ($current.get() < threshold) {
             $active.set(null);
             onEvent({ method: "stop" });
+            const samples = currentBlockCount * 1024;
+            const duration = samples / 16000;
+            log(`Utterance finished, duration: ${duration.toFixed(2)}s`);
           } else {
-            currentLength++;
+            currentBlockCount++;
           }
         }
         if ($active.get()) {
@@ -197,18 +240,19 @@ function createAudioSenderController(options: {
   }
 
   async function startWebsocket() {
+    const { backend, room, key } = backendContext;
     const socket = new ReconnectingWebSocket(
-      "ws://localhost:10300/rooms/hello/audioIngest?token=dummy"
+      `${backend}/rooms/${room}/audioIngest?key=${key}`
     );
     socket.onopen = () => {
       log("WebSocket connected");
+      $socketStatus.set("authenticating");
     };
     socket.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.method === "welcome") {
         log("Received welcome message");
-        socketOpened = true;
-        $socketActive.set(true);
+        $socketStatus.set("connected");
         for (const message of unackedMessages.values()) {
           socket.send(message);
         }
@@ -227,15 +271,19 @@ function createAudioSenderController(options: {
     };
     socket.onclose = (event) => {
       log(`WebSocket disconnected: ${event.reason}`);
+      $socketStatus.set("disconnected");
     };
   }
 
   return {
     $level,
-    $max,
+    $max: $effectiveMax,
     $current,
+    $active,
     start,
     $pendingEventCount,
+    $started,
+    $socketStatus,
   };
 }
 
@@ -249,35 +297,61 @@ const levelToX = (level: number) => {
 type AudioSenderController = ReturnType<typeof createAudioSenderController>;
 let _sender: AudioSenderController | undefined;
 
-function AudioSenderView(props: { deviceId: string }) {
+function AudioSenderView(props: {
+  deviceId: string;
+  backendContext: BackendContext;
+}) {
   const sender = (_sender ??= createAudioSenderController({
+    backendContext: props.backendContext,
     deviceId: props.deviceId,
     log: log,
   }));
   return (
     <>
-      <p>
-        <button className="btn btn-primary" onClick={sender.start}>
-          Start
-        </button>
-      </p>
+      <StartButton sender={sender} />
       <LevelMeter sender={sender} />
-      <PendingEventCount sender={sender} />
+      <StatusInspector sender={sender} />
+      <Knobs />
       <LogViewer />
     </>
   );
 }
 
-function PendingEventCount(props: { sender: AudioSenderController }) {
+function StartButton(props: { sender: AudioSenderController }) {
+  const sender = props.sender;
+  const started = useStore(sender.$started);
+  return (
+    <p>
+      <button
+        className="btn btn-primary"
+        onClick={sender.start}
+        disabled={started}
+      >
+        Start
+      </button>
+    </p>
+  );
+}
+
+function StatusInspector(props: { sender: AudioSenderController }) {
+  const status = useStore(props.sender.$socketStatus);
   const count = useStore(props.sender.$pendingEventCount);
-  return <div>Pending events: {count}</div>;
+  return (
+    <p>
+      Socket status: {status}
+      <br />
+      Pending events: {count}
+    </p>
+  );
 }
 
 function LevelMeter(props: { sender: AudioSenderController }) {
   const level = useStore(props.sender.$level);
   const max = useStore(props.sender.$max);
-  const threshold = max * 0.25;
   const current = useStore(props.sender.$current);
+  const active = useStore(props.sender.$active);
+  const threshold =
+    max * (active ? $deactivationThreshold.get() : $activationThreshold.get());
   return (
     <div
       className="border mb-3 position-relative"
@@ -310,6 +384,66 @@ function LevelMeter(props: { sender: AudioSenderController }) {
           width: "2px",
         }}
       ></div>
+    </div>
+  );
+}
+
+function Knobs() {
+  return (
+    <div className="d-flex gap-3 mb-3 flex-wrap">
+      <NumberKnob
+        step="0.25"
+        label="Max Audio Length"
+        $value={$maxAudioLength}
+      />
+      <NumberKnob step="0.05" label="Decay Easing" $value={$decayEasing} />
+      <NumberKnob
+        step="0.1"
+        label="Minimum Activation Level"
+        $value={$minimumLevel}
+      />
+      <NumberKnob
+        step="0.01"
+        label="Activation Threshold"
+        $value={$activationThreshold}
+      />
+      <NumberKnob
+        step="0.01"
+        label="Deactivation Threshold"
+        $value={$deactivationThreshold}
+      />
+    </div>
+  );
+}
+
+function NumberKnob({
+  label,
+  step,
+  $value,
+}: {
+  label: string;
+  step: string;
+  $value: any;
+}) {
+  const value = useStore($value);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    $value.set(parseFloat(e.target.value));
+  };
+
+  return (
+    <div>
+      <label htmlFor={label} className="form-label text-muted">
+        <small>{label}</small>
+      </label>
+      <input
+        type="number"
+        className="form-control"
+        id={label}
+        step={step}
+        value={value}
+        onChange={handleChange}
+      />
     </div>
   );
 }
