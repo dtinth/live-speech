@@ -1,7 +1,7 @@
 import { Partition, Persistence } from "./persistence";
 import type { Room } from "./room";
 
-const persistence = new Persistence("sqlite://.data/database.sqlite");
+const persistence = new Persistence(".data/database.sqlite");
 
 export const db = {
   get audio(): Partition {

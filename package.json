@@ -34,6 +34,7 @@
     "ofetch": "^1.4.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-textarea-autosize": "^8.5.4",
     "reconnecting-websocket": "^4.4.0",
     "sqlite3": "^5.1.7",
     "tsx": "^4.19.1",

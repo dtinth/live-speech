@@ -138,7 +138,7 @@ async function main() {
   }
   const before = validItems
     .filter((item) => item.start < untranscribed.start)
-    .slice(-3);
+    .slice(-5);
 
   const history = await Promise.all(
     before.map(async (item) => {
@@ -153,9 +153,6 @@ async function main() {
   transcript = postProcess(transcript);
   await api(`/items/${untranscribed.id}`, {
     method: "PATCH",
-    headers: {
-      authorization: `Bearer ${process.env["SERVICE_TOKEN"]}`,
-    },
     body: {
       transcript,
       transcriptBy: "gemini",

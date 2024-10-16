@@ -2,6 +2,7 @@ import { useStore } from "@nanostores/react";
 import { encode } from "@stablelib/base64";
 import { atom, computed } from "nanostores";
 import ReconnectingWebSocket from "reconnecting-websocket";
+import type { BackendContext } from "../BackendContext";
 import {
   $activationThreshold,
   $deactivationThreshold,
@@ -15,12 +16,6 @@ import { LogViewer } from "./LogViewer";
 let audioContext: AudioContext | null = null;
 function getAudioContext() {
   return (audioContext ??= new AudioContext({ sampleRate: 16000 }));
-}
-
-interface BackendContext {
-  backend: string;
-  room: string;
-  key: string;
 }
 
 export function AudioSender() {

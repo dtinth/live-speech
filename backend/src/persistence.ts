@@ -1,41 +1,85 @@
-import KeyvSqlite from "@keyv/sqlite";
-import Keyv from "keyv";
+import sqlite3 from "sqlite3";
 
 export class Partition {
-  private keyv: Keyv;
+  private db: sqlite3.Database;
 
-  constructor(store: any, private partitionKey: string) {
-    this.keyv = new Keyv({ store, namespace: partitionKey });
+  constructor(db: sqlite3.Database, private partitionKey: string) {
+    this.db = db;
   }
 
   async get(sortKey: string): Promise<any> {
-    return this.keyv.get(sortKey);
+    return new Promise((resolve, reject) => {
+      this.db.get<{ value: string }>(
+        "SELECT value FROM keyvalue WHERE partition = ? AND key = ?",
+        [this.partitionKey, sortKey],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row ? JSON.parse(row.value) : undefined);
+        }
+      );
+    });
   }
 
   async set(sortKey: string, value: any): Promise<void> {
-    await this.keyv.set(sortKey, value);
+    const serializedValue = JSON.stringify(value);
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        "INSERT OR REPLACE INTO keyvalue (partition, key, value) VALUES (?, ?, ?)",
+        [this.partitionKey, sortKey, serializedValue],
+        function (err: Error | null) {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
   }
 
   async *[Symbol.asyncIterator]() {
-    console.log(this.partitionKey, this.keyv.opts.namespace);
-    yield* (this.keyv.iterator as any)() as AsyncIterable<[string, any]>;
+    const rows = await new Promise<any[]>((resolve, reject) => {
+      this.db.all(
+        "SELECT key, value FROM keyvalue WHERE partition = ?",
+        [this.partitionKey],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        }
+      );
+    });
+
+    for (const row of rows) {
+      yield [row.key, JSON.parse(row.value)];
+    }
   }
 }
 
 export class Persistence {
-  private store: any;
+  private db: sqlite3.Database;
   private partitions: Map<string, Partition> = new Map();
 
   constructor(connectionString: string) {
-    this.store = new KeyvSqlite(connectionString);
+    this.db = new sqlite3.Database(connectionString, (err) => {
+      if (err) {
+        console.error("Error opening database:", err.message);
+      } else {
+        this.initializeDatabase();
+      }
+    });
+  }
+
+  private initializeDatabase() {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS keyvalue (
+        partition TEXT,
+        key TEXT,
+        value TEXT,
+        PRIMARY KEY (partition, key)
+      )
+    `);
   }
 
   getPartition(partitionKey: string): Partition {
     if (!this.partitions.has(partitionKey)) {
-      this.partitions.set(
-        partitionKey,
-        new Partition(this.store, partitionKey)
-      );
+      this.partitions.set(partitionKey, new Partition(this.db, partitionKey));
     }
     return this.partitions.get(partitionKey)!;
   }
