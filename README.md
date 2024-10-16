@@ -1,54 +1,43 @@
-# Astro Starter Kit: Basics
+# live-speech
 
-```sh
-npm create astro@latest -- --template basics
-```
+This project aims to provide live speech transcription for tech events, specifically designed to support Thai tech talks where there's a mixture of Thai words and technical terms. The system offers real-time transcription with post-processing capabilities for improved accuracy.
 
-[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/withastro/astro/tree/latest/examples/basics)
-[![Open with CodeSandbox](https://assets.codesandbox.io/github/button-edit-lime.svg)](https://codesandbox.io/p/sandbox/github/withastro/astro/tree/latest/examples/basics)
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/withastro/astro?devcontainer_path=.devcontainer/basics/devcontainer.json)
+## Components
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+![A flowchart on a black background illustrates the workflow of an audio transcription system: Audio Sender, Server, Realtime Transcriber, Batch Transcriber, and Viewer.](https://im.dt.in.th/ipfs/bafybeibhbdvrey26ieetdcjzf443quorx5xe4vjrf5rt6dit4ay3paitqq/image.webp)
 
-![just-the-basics](https://github.com/withastro/astro/assets/2244813/a0a5533c-a856-4198-8470-2d67b1d7c554)
+### Audio Sender
 
-## 🚀 Project Structure
+- Web-based, using `getUserMedia` API
+- Responsible for capturing audio from the speaker's device, converting it to 16-bit linear PCM audio data, and sends it to the server using WebSockets
 
-Inside of your Astro project, you'll see the following folders and files:
+### Server
 
-```text
-/
-├── public/
-│   └── favicon.svg
-├── src/
-│   ├── components/
-│   │   └── Card.astro
-│   ├── layouts/
-│   │   └── Layout.astro
-│   └── pages/
-│       └── index.astro
-└── package.json
-```
+- Acts as the central backend for the application
+- Handles database operations and pub/sub functionality
+- Manages communication between different components
 
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
+### Realtime Transcriber
 
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
+- Performs streaming transcription in real-time
+- Provides quick, albeit less accurate, transcriptions
+- Useful for immediate feedback and live subtitles
 
-Any static assets, like images, can be placed in the `public/` directory.
+### Batch Transcriber
 
-## 🧞 Commands
+- Uses a more advanced ASR model (Gemini 1.5 Flash) for improved accuracy
+- Processes audio in batches for higher quality transcriptions
 
-All commands are run from the root of the project, from a terminal:
+### Transcript Viewer
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
+- Displays the transcribed text to the audience
+- Shows both real-time and refined transcriptions
 
-## 👀 Want to learn more?
+## Key Features
 
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+- Real-time audio capture and streaming
+- Live transcription with quick feedback
+- High-accuracy batch processing for refined transcripts
+- Support for mixed Thai and English technical content
+
+This system is designed to enhance the accessibility and documentation of Thai tech talks by providing accurate transcriptions that can handle the unique challenges of mixed-language technical presentations.

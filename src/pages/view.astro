@@ -1,0 +1,10 @@
+---
+import { TranscriptViewer } from "../components/TranscriptViewer";
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout title="Audio Sender">
+  <div class="container mt-5">
+    <TranscriptViewer client:only="react" />
+  </div>
+</Layout>

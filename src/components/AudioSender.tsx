@@ -1,8 +1,25 @@
 import { useStore } from "@nanostores/react";
+import { encode } from "@stablelib/base64";
 import { atom } from "nanostores";
-import { useState } from "react";
+import ReconnectingWebSocket from "reconnecting-websocket";
 import { log } from "../logbus";
 import { LogViewer } from "./LogViewer";
+
+let audioContext: AudioContext | null = null;
+function getAudioContext() {
+  return (audioContext ??= new AudioContext({ sampleRate: 16000 }));
+}
+
+export function AudioSender() {
+  const params = new URLSearchParams(window.location.search);
+
+  const deviceId = params.get("deviceId");
+  if (!deviceId) {
+    return <AudioDeviceSelector />;
+  }
+
+  return <AudioSenderView deviceId={deviceId} />;
+}
 
 const $devices = atom<MediaDeviceInfo[]>([]);
 
@@ -22,44 +39,93 @@ const getDeviceList = async () => {
   }
 };
 
-let audioContext: AudioContext | null = null;
-function getAudioContext() {
-  return (audioContext ??= new AudioContext({ sampleRate: 16000 }));
+function AudioDeviceSelector() {
+  const devices = useStore($devices);
+  return (
+    <>
+      <h1>Select device</h1>
+      <div>
+        <button
+          className="btn btn-primary flex-shrink-0"
+          onClick={getDeviceList}
+        >
+          {devices.length > 0 ? "Refresh" : "Get"} device list
+        </button>
+      </div>
+      <ul>
+        {devices.map((device) => (
+          <li key={device.deviceId}>
+            <a href={`?deviceId=${device.deviceId}`}>{device.label}</a>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
 }
 
-function createAudioSender(options: {
-  websocketUrl: string;
+function createAudioSenderController(options: {
   deviceId: string;
-  abortSignal: AbortSignal;
-  onLog: (message: string) => void;
+  log: (message: string) => void;
 }) {
-  const { websocketUrl, deviceId, abortSignal, onLog } = options;
-  const audioContext = getAudioContext();
+  const { log } = options;
+  const $level = atom(0);
+  const $max = atom(0);
+  const $current = atom(0);
+  const $active = atom<string | null>(null);
+  const $socketActive = atom(false);
+  const unackedMessages = new Map<string, any>();
+  const $pendingEventCount = atom(0);
+  let currentLength = 0;
+  let socketOpened = false;
+  type SocketEvent =
+    | { method: "start"; params: { id: string } }
+    | { method: "audio"; params: { data: string } }
+    | { method: "stop" };
+  let onEvent: (event: SocketEvent) => void = () => {};
 
-  const workletCode = `
-    class AudioSenderProcessor extends AudioWorkletProcessor {
-      process(inputs) {
-        const input = inputs[0];
-        if (input.length > 0) {
-          const inputData = input[0];
-          const outputData = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            const s = Math.max(-1, Math.min(1, inputData[i]));
-            outputData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
-          this.port.postMessage(outputData.buffer, [outputData.buffer]);
+  async function start() {
+    await Promise.all([startAudio(), startWebsocket()]);
+  }
+
+  async function startAudio() {
+    const audioContext = getAudioContext();
+
+    const workletCode = `
+      class AudioSenderProcessor extends AudioWorkletProcessor {
+        constructor() {
+          super();
+          this.buffer = new Float32Array(1280);
+          this.bufferIndex = 0;
         }
-        return true;
-      }
-    }
-    registerProcessor('audio-sender-processor', AudioSenderProcessor);
-  `;
 
-  const connect = async () => {
+        process(inputs) {
+          const input = inputs[0];
+          if (input.length > 0) {
+            const inputData = input[0];
+            for (let i = 0; i < inputData.length; i++) {
+              this.buffer[this.bufferIndex++] = inputData[i];
+
+              if (this.bufferIndex === this.buffer.length) {
+                const outputData = new Int16Array(this.buffer.length);
+                for (let j = 0; j < this.buffer.length; j++) {
+                  const s = Math.max(-1, Math.min(1, this.buffer[j]));
+                  outputData[j] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+                this.port.postMessage(outputData.buffer, [outputData.buffer]);
+                this.bufferIndex = 0;
+              }
+            }
+          }
+          return true;
+        }
+      }
+      registerProcessor('audio-sender-processor', AudioSenderProcessor);
+    `;
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          deviceId: { exact: deviceId },
+          deviceId: { exact: options.deviceId },
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
@@ -80,101 +146,170 @@ function createAudioSender(options: {
       );
       source.connect(workletNode);
 
-      const socket = new WebSocket(websocketUrl);
-
-      socket.onopen = () => {
-        onLog("WebSocket connected");
-      };
-
-      socket.onclose = (event) => {
-        onLog(`WebSocket disconnected: ${event.reason}`);
-        setTimeout(connect, 1000); // Attempt to reconnect after 1 second
-      };
-
-      socket.onerror = (error) => {
-        onLog(`WebSocket error: ${error}`);
-      };
-
       workletNode.port.onmessage = (event) => {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(event.data);
+        const data = new Int16Array(event.data);
+        // Calculate RMS
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          sum += (data[i] / 32768) ** 2;
+        }
+        const level = Math.sqrt(sum / data.length) * Math.sqrt(2);
+        $level.set(level);
+        if (level > $max.get()) {
+          $max.set(level);
+        } else {
+          $max.set($max.get() * 0.995);
+        }
+        if (level > $current.get()) {
+          $current.set(level);
+        } else if ($active.get()) {
+          const progress = Math.min(1, currentLength / 250);
+          const decayRate = 0.99 - progress * 0.5;
+          $current.set($current.get() * decayRate);
+        } else {
+          $current.set(level);
+        }
+        const threshold = $max.get() * 0.25;
+        if (!$active.get()) {
+          if ($current.get() > threshold) {
+            const id = `au${Date.now()}`;
+            $active.set(id);
+            currentLength = 0;
+            onEvent({ method: "start", params: { id } });
+          }
+        } else if ($active.get()) {
+          if ($current.get() < threshold) {
+            $active.set(null);
+            onEvent({ method: "stop" });
+          } else {
+            currentLength++;
+          }
+        }
+        if ($active.get()) {
+          // Convert data into base64-encoded string.
+          const base64 = encode(new Uint8Array(event.data));
+          onEvent({ method: "audio", params: { data: base64 } });
         }
       };
-
-      abortSignal.addEventListener("abort", () => {
-        onLog("Audio sender aborted");
-        stream.getTracks().forEach((track) => track.stop());
-        socket.close();
-        URL.revokeObjectURL(workletUrl);
-      });
     } catch (error) {
-      onLog(`Error in audio sender: ${error}`);
-      setTimeout(connect, 1000); // Attempt to reconnect after 1 second
+      options.log(`Error in audio sender: ${error}`);
     }
-  };
+  }
 
-  connect();
+  async function startWebsocket() {
+    const socket = new ReconnectingWebSocket(
+      "ws://localhost:10300/rooms/hello/audio?token=dummy"
+    );
+    socket.onopen = () => {
+      log("WebSocket connected");
+    };
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.method === "welcome") {
+        log("Received welcome message");
+        socketOpened = true;
+        $socketActive.set(true);
+        for (const message of unackedMessages.values()) {
+          socket.send(message);
+        }
+      }
+      if (data.id && unackedMessages.has(data.id)) {
+        unackedMessages.delete(data.id);
+        $pendingEventCount.set(unackedMessages.size);
+      }
+    };
+    onEvent = (event) => {
+      const id = crypto.randomUUID();
+      const payload = JSON.stringify({ id, ...event });
+      socket.send(payload);
+      unackedMessages.set(id, payload);
+      $pendingEventCount.set(unackedMessages.size);
+    };
+    socket.onclose = (event) => {
+      log(`WebSocket disconnected: ${event.reason}`);
+    };
+  }
+
+  return {
+    $level,
+    $max,
+    $current,
+    start,
+    $pendingEventCount,
+  };
 }
 
-const $active = atom<{
-  abortController: AbortController;
-} | null>(null);
+const levelToDb = (level: number) => 20 * Math.log10(level);
+const levelToX = (level: number) => {
+  const db = levelToDb(level);
+  const x = Math.max(0, Math.min(1, (db + 100) / 100));
+  return x;
+};
 
-export function AudioSender() {
-  const devices = useStore($devices);
-  const active = useStore($active);
-  const [selectedDeviceId, setSelectedDeviceId] = useState("");
+type AudioSenderController = ReturnType<typeof createAudioSenderController>;
+let _sender: AudioSenderController | undefined;
 
-  const toggle = () => {
-    const active = $active.get();
-    if (active) {
-      active.abortController.abort();
-      $active.set(null);
-    } else if (selectedDeviceId) {
-      const abortController = new AbortController();
-      $active.set({ abortController });
-      createAudioSender({
-        websocketUrl: "ws://localhost:10300/publish/1",
-        deviceId: selectedDeviceId,
-        abortSignal: abortController.signal,
-        onLog(message) {
-          log(message);
-        },
-      });
-    }
-  };
-
+function AudioSenderView(props: { deviceId: string }) {
+  const sender = (_sender ??= createAudioSenderController({
+    deviceId: props.deviceId,
+    log: log,
+  }));
   return (
     <>
-      <h1>Audio sender</h1>
-      <div className="d-flex gap-2">
-        <button
-          className="btn btn-primary flex-shrink-0"
-          onClick={getDeviceList}
-          disabled={!!active}
-        >
-          {devices.length > 0 ? "Refresh" : "Get"} device list
+      <p>
+        <button className="btn btn-primary" onClick={sender.start}>
+          Start
         </button>
-        <select
-          className="form-select flex-grow-1 flex-shrink-1"
-          disabled={!!active}
-          value={selectedDeviceId}
-          onChange={(event) => setSelectedDeviceId(event.target.value)}
-        >
-          <option value="">-- Select a microphone --</option>
-          {devices.map((device) => (
-            <option key={device.deviceId} value={device.deviceId}>
-              {device.label || `Microphone ${device.deviceId}`}
-            </option>
-          ))}
-        </select>
-        <button className="btn btn-primary flex-shrink-0" onClick={toggle}>
-          {active ? "Stop" : "Start"}
-        </button>
-      </div>
-      <div className="mt-3">
-        <LogViewer />
-      </div>
+      </p>
+      <LevelMeter sender={sender} />
+      <PendingEventCount sender={sender} />
+      <LogViewer />
     </>
+  );
+}
+
+function PendingEventCount(props: { sender: AudioSenderController }) {
+  const count = useStore(props.sender.$pendingEventCount);
+  return <div>Pending events: {count}</div>;
+}
+
+function LevelMeter(props: { sender: AudioSenderController }) {
+  const level = useStore(props.sender.$level);
+  const max = useStore(props.sender.$max);
+  const threshold = max * 0.25;
+  const current = useStore(props.sender.$current);
+  return (
+    <div
+      className="border mb-3 position-relative"
+      style={{ height: "16px", maxWidth: "720px" }}
+    >
+      <div
+        className="position-absolute top-0 left-0 bottom-0 bg-primary"
+        style={{
+          width: `${levelToX(current) * 100}%`,
+          opacity: "0.5",
+        }}
+      ></div>
+      <div
+        className="position-absolute top-0 left-0 bottom-0 bg-info"
+        style={{
+          width: `${levelToX(level) * 100}%`,
+        }}
+      ></div>
+      <div
+        className="position-absolute top-0 bottom-0 bg-danger"
+        style={{
+          left: `${levelToX(threshold) * 100}%`,
+          width: "2px",
+        }}
+      ></div>
+      <div
+        className="position-absolute top-0 bottom-0 bg-success"
+        style={{
+          left: `${levelToX(max) * 100}%`,
+          width: "2px",
+        }}
+      ></div>
+    </div>
   );
 }
