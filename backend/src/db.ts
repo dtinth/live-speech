@@ -1,5 +1,5 @@
-import type { Room } from "../scripts/Room";
 import { Partition, Persistence } from "./persistence";
+import type { Room } from "./room";
 
 const persistence = new Persistence("sqlite://.data/database.sqlite");
 
