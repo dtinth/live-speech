@@ -198,7 +198,7 @@ function createAudioSenderController(options: {
 
   async function startWebsocket() {
     const socket = new ReconnectingWebSocket(
-      "ws://localhost:10300/rooms/hello/audio?token=dummy"
+      "ws://localhost:10300/rooms/hello/audioIngest?token=dummy"
     );
     socket.onopen = () => {
       log("WebSocket connected");

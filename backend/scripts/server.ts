@@ -41,65 +41,75 @@ class Utterance {
   }
 }
 
-fastify.get("/rooms/:room/audio", { websocket: true }, (connection, req) => {
-  const token = (req.query as Record<string, string>).token;
-  const room = new Room((req.params as { room: string }).room);
-  if (token !== process.env["SERVICE_TOKEN"]) {
-    connection.send(JSON.stringify({ error: "Invalid token" }));
-    connection.close();
-    return;
-  }
+fastify.get(
+  "/rooms/:room/audioIngest",
+  { websocket: true },
+  (connection, req) => {
+    const token = (req.query as Record<string, string>).token;
+    const room = new Room((req.params as { room: string }).room);
+    if (token !== process.env["SERVICE_TOKEN"]) {
+      connection.send(JSON.stringify({ error: "Invalid token" }));
+      connection.close();
+      return;
+    }
 
-  let currentUtterance: Utterance | undefined;
+    let currentUtterance: Utterance | undefined;
 
-  connection.on("message", async (message) => {
-    try {
-      const data = JSON.parse(message.toString());
-      // JSON-RPC messages:
-      // - "start" - start audio stream.
-      // - "audio" - audio data. params.data is base64-encoded s16le audio data.
-      // - "stop" - stop audio stream.
-      // Send acknowledgement for each message.
+    connection.on("message", async (message) => {
       try {
-        switch (data.method) {
-          case "start": {
-            currentUtterance = new Utterance(room);
-            break;
+        const data = JSON.parse(message.toString());
+        // JSON-RPC messages:
+        // - "start" - start audio stream.
+        // - "audio" - audio data. params.data is base64-encoded s16le audio data.
+        // - "stop" - stop audio stream.
+        // Send acknowledgement for each message.
+        try {
+          switch (data.method) {
+            case "start": {
+              currentUtterance = new Utterance(room);
+              break;
+            }
+            case "audio": {
+              currentUtterance?.addAudio(data.params.data);
+              break;
+            }
+            case "stop": {
+              currentUtterance?.finish();
+              break;
+            }
           }
-          case "audio": {
-            currentUtterance?.addAudio(data.params.data);
-            break;
-          }
-          case "stop": {
-            currentUtterance?.finish();
-            break;
-          }
+          connection.send(JSON.stringify({ id: data.id, result: null }));
+        } catch (error) {
+          connection.send(
+            JSON.stringify({ id: data.id, error: String(error) })
+          );
+          req.log.error(error);
         }
-        connection.send(JSON.stringify({ id: data.id, result: null }));
       } catch (error) {
-        connection.send(JSON.stringify({ id: data.id, error: String(error) }));
         req.log.error(error);
       }
-    } catch (error) {
-      req.log.error(error);
-    }
-  });
-  connection.send(JSON.stringify({ method: "welcome" }));
-});
-
-fastify.get("/rooms/:room/events", { websocket: true }, (connection, req) => {
-  const token = (req.query as Record<string, string>).token;
-  const room = new Room((req.params as { room: string }).room);
-  if (token !== process.env["SERVICE_TOKEN"]) {
-    connection.send(JSON.stringify({ error: "Invalid token" }));
-    connection.close();
-    return;
+    });
+    connection.send(JSON.stringify({ method: "welcome" }));
   }
-  const unsubscribe = pubsub.subscribe(room.audioTopic, (message) => {
-    connection.send(message);
-  });
-  connection.on("close", unsubscribe);
-});
+);
+
+fastify.get(
+  "/rooms/:room/audioEvents",
+  { websocket: true },
+  (connection, req) => {
+    const token = (req.query as Record<string, string>).token;
+    const room = new Room((req.params as { room: string }).room);
+    if (token !== process.env["SERVICE_TOKEN"]) {
+      connection.send(JSON.stringify({ error: "Invalid token" }));
+      connection.close();
+      return;
+    }
+    const unsubscribe = pubsub.subscribe(room.audioTopic, (message) => {
+      connection.send(message);
+    });
+    connection.on("close", unsubscribe);
+  }
+);
 
 fastify.get(
   "/rooms/:room/publicEvents",

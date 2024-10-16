@@ -95,7 +95,7 @@ class Transcription {
 }
 
 const websocket = new ReconnectingWebSocket(
-  `http://localhost:10300/rooms/${room}/events?token=${process.env["SERVICE_TOKEN"]}`
+  `http://localhost:10300/rooms/${room}/audioEvents?token=${process.env["SERVICE_TOKEN"]}`
 );
 websocket.onopen = () => {
   console.log("Connected to backend");
