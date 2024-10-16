@@ -7,7 +7,10 @@ export const db = {
   get audio(): Partition {
     return persistence.getPartition("audio");
   },
-  roomMetadata(room: Room): Partition {
+  get rooms(): Partition {
+    return persistence.getPartition("rooms");
+  },
+  roomItems(room: Room): Partition {
     return persistence.getPartition(`room_${room.name}`);
   },
 };

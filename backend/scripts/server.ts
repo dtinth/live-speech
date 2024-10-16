@@ -19,7 +19,7 @@ class Utterance {
 
   constructor(public room: Room) {
     pubsub.publish(room.audioTopic, "audio_start", { id: this.id });
-    db.roomMetadata(this.room).set(this.id, {
+    db.roomItems(this.room).set(this.id, {
       start: this.start,
     });
     pubsub.publish(`public/${room}`, "updated", { id: this.id });
@@ -31,7 +31,7 @@ class Utterance {
   finish() {
     pubsub.publish(this.room.name, "audio_finish", { id: this.id });
     const buffer = Buffer.concat(this.buffers);
-    db.roomMetadata(this.room).set(this.id, {
+    db.roomItems(this.room).set(this.id, {
       start: this.start,
       finish: new Date().toISOString(),
       length: buffer.length,
@@ -126,7 +126,7 @@ fastify.get(
 fastify.get("/rooms/:room/items", async (req) => {
   const room = new Room((req.params as { room: string }).room);
   const output = [];
-  for await (const [id, data] of db.roomMetadata(room)) {
+  for await (const [id, data] of db.roomItems(room)) {
     output.push({ id, ...data });
   }
   return output;
@@ -135,7 +135,7 @@ fastify.get("/rooms/:room/items", async (req) => {
 fastify.get("/rooms/:room/items/:id", async (req) => {
   const room = new Room((req.params as { room: string }).room);
   const id = (req.params as { id: string }).id;
-  return { ...(await db.roomMetadata(room).get(id)), id };
+  return { ...(await db.roomItems(room).get(id)), id };
 });
 
 fastify.patch("/rooms/:room/items/:id", async (req) => {
@@ -145,7 +145,7 @@ fastify.patch("/rooms/:room/items/:id", async (req) => {
   }
   const room = new Room((req.params as { room: string }).room);
   const id = (req.params as { id: string }).id;
-  const value = await db.roomMetadata(room).get(id);
+  const value = await db.roomItems(room).get(id);
   const body = req.body as any;
   const newValue = {
     ...value,
@@ -155,7 +155,7 @@ fastify.patch("/rooms/:room/items/:id", async (req) => {
       { payload: body, time: new Date().toISOString() },
     ],
   };
-  await db.roomMetadata(room).set(id, newValue);
+  await db.roomItems(room).set(id, newValue);
   pubsub.publish(room.publicTopic, "updated", { id });
   return newValue;
 });
