@@ -1,17 +1,9 @@
 import Cors from "@fastify/cors";
 import Websocket from "@fastify/websocket";
-import KeyvSqlite from "@keyv/sqlite";
 import Fastify from "fastify";
-import Keyv from "keyv";
 import { uuidv7 } from "uuidv7";
+import { db } from "../src/db";
 import { pubsub } from "../src/pubsub";
-
-const keyvStore = new KeyvSqlite("sqlite://.data/database.sqlite");
-
-const audioDb = new Keyv({ store: keyvStore, namespace: "audio" });
-function getRoomMetadataDb(room: string) {
-  return new Keyv({ store: keyvStore, namespace: `room_${room}` });
-}
 
 const fastify = Fastify({
   logger: true,
@@ -25,7 +17,7 @@ class Utterance {
   buffers: Buffer[] = [];
   constructor(public room: string) {
     pubsub.publish(room, "audio_start", { id: this.id });
-    getRoomMetadataDb(this.room).set(this.id, {
+    db.roomMetadata(this.room).set(this.id, {
       start: this.start,
     });
     pubsub.publish(`public/${room}`, "updated", { id: this.id });
@@ -37,12 +29,12 @@ class Utterance {
   finish() {
     pubsub.publish(this.room, "audio_finish", { id: this.id });
     const buffer = Buffer.concat(this.buffers);
-    getRoomMetadataDb(this.room).set(this.id, {
+    db.roomMetadata(this.room).set(this.id, {
       start: this.start,
       finish: new Date().toISOString(),
       length: buffer.length,
     });
-    audioDb.set(this.id, buffer.toString("base64"));
+    db.audio.set(this.id, buffer.toString("base64"));
     pubsub.publish(`public/${this.room}`, "updated", { id: this.id });
   }
 }
@@ -119,14 +111,10 @@ fastify.get(
   }
 );
 
-function iterate(keyv: Keyv) {
-  return (keyv.iterator as any)() as AsyncIterable<any>;
-}
-
 fastify.get("/rooms/:room/items", async (req) => {
   const room = (req.params as { room: string }).room;
   const output = [];
-  for await (const [id, data] of iterate(getRoomMetadataDb(room))) {
+  for await (const [id, data] of db.roomMetadata(room)) {
     output.push({ id, ...data });
   }
   return output;
@@ -135,8 +123,7 @@ fastify.get("/rooms/:room/items", async (req) => {
 fastify.get("/rooms/:room/items/:id", async (req) => {
   const room = (req.params as { room: string }).room;
   const id = (req.params as { id: string }).id;
-  const db = getRoomMetadataDb(room);
-  return { ...(await db.get(id)), id };
+  return { ...(await db.roomMetadata(room).get(id)), id };
 });
 
 fastify.patch("/rooms/:room/items/:id", async (req) => {
@@ -146,8 +133,7 @@ fastify.patch("/rooms/:room/items/:id", async (req) => {
   }
   const room = (req.params as { room: string }).room;
   const id = (req.params as { id: string }).id;
-  const db = getRoomMetadataDb(room);
-  const value = await db.get(id);
+  const value = await db.roomMetadata(room).get(id);
   const body = req.body as any;
   const newValue = {
     ...value,
@@ -157,9 +143,7 @@ fastify.patch("/rooms/:room/items/:id", async (req) => {
       { payload: body, time: new Date().toISOString() },
     ],
   };
-  await db.set(id, newValue);
-  // const listeners = getListenerSet(`public/${room}`);
-  // broadcast(listeners, "updated", { id });
+  await db.roomMetadata(room).set(id, newValue);
   pubsub.publish(`public/${room}`, "updated", { id });
   return newValue;
 });
@@ -181,7 +165,7 @@ fastify.post("/rooms/:room/items/:id/partial", async (req) => {
 
 fastify.get("/pcm/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
-  const buffer = Buffer.from((await audioDb.get(id)) as string, "base64");
+  const buffer = Buffer.from((await db.audio.get(id)) as string, "base64");
   // Generate wav file. Buffer is raw PCM, s16le, 1 channel.
   const sampleRate = 16000; // Assuming 16kHz sample rate
   const numChannels = 1;
