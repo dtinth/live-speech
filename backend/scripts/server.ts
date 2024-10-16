@@ -4,6 +4,7 @@ import Fastify from "fastify";
 import { uuidv7 } from "uuidv7";
 import { db } from "../src/db";
 import { pubsub } from "../src/pubsub";
+import { Room } from "./Room";
 
 const fastify = Fastify({
   logger: true,
@@ -15,8 +16,9 @@ class Utterance {
   id = uuidv7();
   start = new Date().toISOString();
   buffers: Buffer[] = [];
-  constructor(public room: string) {
-    pubsub.publish(room, "audio_start", { id: this.id });
+
+  constructor(public room: Room) {
+    pubsub.publish(room.audioTopic, "audio_start", { id: this.id });
     db.roomMetadata(this.room).set(this.id, {
       start: this.start,
     });
@@ -24,10 +26,10 @@ class Utterance {
   }
   addAudio(base64: string) {
     this.buffers.push(Buffer.from(base64, "base64"));
-    pubsub.publish(this.room, "audio_data", { id: this.id, base64 });
+    pubsub.publish(this.room.audioTopic, "audio_data", { id: this.id, base64 });
   }
   finish() {
-    pubsub.publish(this.room, "audio_finish", { id: this.id });
+    pubsub.publish(this.room.name, "audio_finish", { id: this.id });
     const buffer = Buffer.concat(this.buffers);
     db.roomMetadata(this.room).set(this.id, {
       start: this.start,
@@ -41,7 +43,7 @@ class Utterance {
 
 fastify.get("/rooms/:room/audio", { websocket: true }, (connection, req) => {
   const token = (req.query as Record<string, string>).token;
-  const room = (req.params as { room: string }).room;
+  const room = new Room((req.params as { room: string }).room);
   if (token !== process.env["SERVICE_TOKEN"]) {
     connection.send(JSON.stringify({ error: "Invalid token" }));
     connection.close();
@@ -87,13 +89,13 @@ fastify.get("/rooms/:room/audio", { websocket: true }, (connection, req) => {
 
 fastify.get("/rooms/:room/events", { websocket: true }, (connection, req) => {
   const token = (req.query as Record<string, string>).token;
-  const room = (req.params as { room: string }).room;
+  const room = new Room((req.params as { room: string }).room);
   if (token !== process.env["SERVICE_TOKEN"]) {
     connection.send(JSON.stringify({ error: "Invalid token" }));
     connection.close();
     return;
   }
-  const unsubscribe = pubsub.subscribe(room, (message) => {
+  const unsubscribe = pubsub.subscribe(room.audioTopic, (message) => {
     connection.send(message);
   });
   connection.on("close", unsubscribe);
@@ -103,8 +105,8 @@ fastify.get(
   "/rooms/:room/publicEvents",
   { websocket: true },
   (connection, req) => {
-    const room = (req.params as { room: string }).room;
-    const unsubscribe = pubsub.subscribe(`public/${room}`, (message) => {
+    const room = new Room((req.params as { room: string }).room);
+    const unsubscribe = pubsub.subscribe(room.publicTopic, (message) => {
       connection.send(message);
     });
     connection.on("close", unsubscribe);
@@ -112,7 +114,7 @@ fastify.get(
 );
 
 fastify.get("/rooms/:room/items", async (req) => {
-  const room = (req.params as { room: string }).room;
+  const room = new Room((req.params as { room: string }).room);
   const output = [];
   for await (const [id, data] of db.roomMetadata(room)) {
     output.push({ id, ...data });
@@ -121,7 +123,7 @@ fastify.get("/rooms/:room/items", async (req) => {
 });
 
 fastify.get("/rooms/:room/items/:id", async (req) => {
-  const room = (req.params as { room: string }).room;
+  const room = new Room((req.params as { room: string }).room);
   const id = (req.params as { id: string }).id;
   return { ...(await db.roomMetadata(room).get(id)), id };
 });
@@ -131,7 +133,7 @@ fastify.patch("/rooms/:room/items/:id", async (req) => {
   if (token !== process.env["SERVICE_TOKEN"]) {
     return;
   }
-  const room = (req.params as { room: string }).room;
+  const room = new Room((req.params as { room: string }).room);
   const id = (req.params as { id: string }).id;
   const value = await db.roomMetadata(room).get(id);
   const body = req.body as any;
@@ -144,7 +146,7 @@ fastify.patch("/rooms/:room/items/:id", async (req) => {
     ],
   };
   await db.roomMetadata(room).set(id, newValue);
-  pubsub.publish(`public/${room}`, "updated", { id });
+  pubsub.publish(room.publicTopic, "updated", { id });
   return newValue;
 });
 
@@ -153,10 +155,10 @@ fastify.post("/rooms/:room/items/:id/partial", async (req) => {
   if (token !== process.env["SERVICE_TOKEN"]) {
     return;
   }
-  const room = (req.params as { room: string }).room;
+  const room = new Room((req.params as { room: string }).room);
   const id = (req.params as { id: string }).id;
   const body = req.body as { transcript: string };
-  pubsub.publish(`public/${room}`, "partial_transcript", {
+  pubsub.publish(room.publicTopic, "partial_transcript", {
     id,
     transcript: body.transcript,
   });
