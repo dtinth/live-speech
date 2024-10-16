@@ -1,6 +1,7 @@
 import Cors from "@fastify/cors";
 import Websocket from "@fastify/websocket";
 import Fastify from "fastify";
+import { randomBytes } from "node:crypto";
 import { uuidv7 } from "uuidv7";
 import { db } from "../src/db";
 import { pubsub } from "../src/pubsub";
@@ -40,6 +41,36 @@ class Utterance {
     pubsub.publish(`public/${this.room}`, "updated", { id: this.id });
   }
 }
+
+fastify.post("/admin/rooms", async (req, reply) => {
+  const token = req.headers["authorization"]?.split(" ")[1];
+  if (token !== process.env["SERVICE_TOKEN"]) {
+    reply.code(401).send({ error: "Unauthorized" });
+    return;
+  }
+
+  const roomId = uuidv7();
+  const roomKey = randomBytes(32).toString("hex");
+
+  await db.rooms.set(roomId, { roomKey });
+
+  return { roomId, roomKey };
+});
+
+fastify.get("/admin/rooms", async (req, reply) => {
+  const token = req.headers["authorization"]?.split(" ")[1];
+  if (token !== process.env["SERVICE_TOKEN"]) {
+    reply.code(401).send({ error: "Unauthorized" });
+    return;
+  }
+
+  const rooms = [];
+  for await (const [roomId, roomData] of db.rooms) {
+    rooms.push({ roomId, ...roomData });
+  }
+
+  return rooms;
+});
 
 fastify.get(
   "/rooms/:room/audioIngest",
