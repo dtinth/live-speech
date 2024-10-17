@@ -38,3 +38,19 @@
 .TranscriptItem__content:hover .TranscriptItem__time {
   opacity: 1;
 }
+
+.TranscriptViewerOptions {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #000;
+  padding: 0.5rem;
+  transform: translateY(100%) translateY(-0.5rem);
+  transition: transform 0.3s;
+}
+
+.TranscriptViewerOptions:hover,
+.TranscriptViewerOptions:focus-within {
+  transform: translateY(0);
+}

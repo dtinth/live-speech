@@ -175,8 +175,8 @@ function postProcess(text: string) {
       .replace(/ๆ(?:ๆ+)\s*$/, "ๆ")
 
       // Add spaces between Thai words and foreign words.
-      .replace(/([ก-๙])([a-zA-Z0-9])/, "$1 $2")
-      .replace(/([a-zA-Z0-9])([ก-๙])/, "$1 $2")
+      .replace(/([ก-๙])([a-zA-Z0-9])/g, "$1 $2")
+      .replace(/([a-zA-Z0-9])([ก-๙])/g, "$1 $2")
 
       .trim()
   );

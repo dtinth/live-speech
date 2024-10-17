@@ -293,7 +293,7 @@ function EditableTranscript({
 function TranscriptViewerOptions() {
   const autoScroll = useStore($autoScroll);
   return (
-    <div>
+    <div className="TranscriptViewerOptions">
       <label>
         <input
           type="checkbox"
