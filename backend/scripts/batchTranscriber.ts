@@ -95,7 +95,6 @@ Transcribe the following audio files.`,
     });
     expected.push({ id, transcript: item.transcript });
   }
-  console.log(historyParts);
   const chatSession = model.startChat({
     generationConfig: generationConfig,
     history: [
