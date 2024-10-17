@@ -167,12 +167,19 @@ Transcribe the following audio files.`,
 }
 
 function postProcess(text: string) {
-  return text
-    .replace(/ปื๊ด\s*$/, "")
-    .replace(/ปื้ด\s*$/, "")
-    .replace(/ปี๊บๆ+\s*$/, "")
-    .replace(/ๆ(?:ๆ+)\s*$/, "ๆ")
-    .trim();
+  return (
+    text
+      .replace(/ปื๊ด\s*$/, "")
+      .replace(/ปื้ด\s*$/, "")
+      .replace(/ปี๊บๆ+\s*$/, "")
+      .replace(/ๆ(?:ๆ+)\s*$/, "ๆ")
+
+      // Add spaces between Thai words and foreign words.
+      .replace(/([ก-๙])([a-zA-Z0-9])/, "$1 $2")
+      .replace(/([a-zA-Z0-9])([ก-๙])/, "$1 $2")
+
+      .trim()
+  );
 }
 
 async function main() {
