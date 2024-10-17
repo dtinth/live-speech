@@ -3,6 +3,7 @@ import { spawn } from "child_process";
 import { createInterface } from "node:readline";
 import { PassThrough, Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { ofetch } from "ofetch";
 import ReconnectingWebSocket from "reconnecting-websocket";
 import { getRoomConfig } from "../src/client";
 
@@ -88,6 +89,107 @@ function createGoogleTranscriber(language: string, signal: AbortSignal) {
   };
 }
 
+let cachedSpeechmaticsApiKey: string | undefined;
+async function obtainSpeechamticsApiKey() {
+  if (cachedSpeechmaticsApiKey) return cachedSpeechmaticsApiKey;
+
+  const apiKey = process.env.SPEECHMATICS_API_KEY;
+  if (!apiKey) {
+    throw new Error("SPEECHMATICS_API_KEY environment variable is not set");
+  }
+
+  const refresh = async () => {
+    const response = await ofetch<{ key_value: string }>(
+      "https://mp.speechmatics.com/v1/api_keys?type=rt",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({ ttl: 3600 }),
+      }
+    );
+    cachedSpeechmaticsApiKey = response.key_value;
+    return response.key_value;
+  };
+  setInterval(refresh, 1800 * 1000);
+  return await refresh();
+}
+
+function createSpeechmaticsTranscriber(language: string, signal: AbortSignal) {
+  const output = new PassThrough({ objectMode: true });
+  async function worker(source: AsyncIterable<Uint8Array>) {
+    const tempKey = await obtainSpeechamticsApiKey();
+    const socket = new WebSocket(
+      `wss://eu2.rt.speechmatics.com/v2?jwt=${tempKey}`
+    );
+    const openPromise = new Promise<void>((resolve, reject) => {
+      socket.onopen = () => {
+        console.log("Connected to Speechmatics WebSocket");
+        const startMessage = {
+          message: "StartRecognition",
+          audio_format: {
+            type: "raw",
+            encoding: "pcm_s16le",
+            sample_rate: 16000,
+          },
+          transcription_config: {
+            language,
+            enable_partials: true,
+          },
+        };
+        socket.send(JSON.stringify(startMessage));
+        resolve();
+      };
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        output.write(data);
+        if (data.message === "EndOfTranscript") {
+          socket.close();
+          output.end();
+        }
+      };
+      socket.onerror = (error) => {
+        console.error("WebSocket error:", error);
+        reject();
+        output.end();
+      };
+      socket.onclose = (event) => {
+        console.log("WebSocket closed:", event.code, event.reason);
+        output.end();
+      };
+    });
+    await openPromise;
+    let nChunks = 0;
+    for await (const chunk of source) {
+      socket.send(chunk);
+      nChunks += 1;
+    }
+    socket.send(
+      JSON.stringify({ message: "EndOfStream", last_seq_no: nChunks })
+    );
+  }
+
+  return async function* (source: AsyncIterable<Uint8Array>) {
+    const promise = worker(source);
+    for await (const item of output) {
+      if (
+        item.message === "AddTranscript" ||
+        item.message === "AddPartialTranscript"
+      ) {
+        const text = String(item.metadata?.transcript || "")
+          .replace(/<\w+>/g, "")
+          .trim();
+        if (text) {
+          yield { text };
+        }
+      }
+    }
+    await promise;
+  };
+}
+
 async function* parseNdjson(source: any) {
   for await (const line of createInterface({ input: Readable.from(source) })) {
     if (line.trim()) {
@@ -114,7 +216,9 @@ class Transcription {
       await pipeline(
         this.input,
         new PassThrough(),
-        process.env["PARTIAL_TRANSCRIBER_PROVIDER"] === "local"
+        process.env["PARTIAL_TRANSCRIBER_PROVIDER"] === "speechmatics"
+          ? createSpeechmaticsTranscriber("th", this.abortController.signal)
+          : process.env["PARTIAL_TRANSCRIBER_PROVIDER"] === "local"
           ? createTranscriber("th", false, this.abortController.signal)
           : createGoogleTranscriber("th-TH", this.abortController.signal),
         async (source) => {
