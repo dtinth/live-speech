@@ -9,9 +9,9 @@ export class Utterance {
   start = new Date().toISOString();
   buffers: Buffer[] = [];
 
-  constructor(public room: Room) {
+  constructor(public room: Room, localTime: string) {
     pubsub.publish(room.audioTopic, "audio_start", { id: this.id });
-    updateItem(room, this.id, { start: this.start });
+    updateItem(room, this.id, { start: this.start, startLocalTime: localTime });
   }
   addAudio(base64: string) {
     this.buffers.push(Buffer.from(base64, "base64"));

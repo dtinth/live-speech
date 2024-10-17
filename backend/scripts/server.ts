@@ -91,14 +91,14 @@ fastify.get(
       try {
         const data = JSON.parse(message.toString());
         // JSON-RPC messages:
-        // - "start" - start audio stream.
+        // - "start" - start audio stream. params.localTime is the local time when the audio stream started.
         // - "audio" - audio data. params.data is base64-encoded s16le audio data.
         // - "stop" - stop audio stream.
         // Send acknowledgement for each message.
         try {
           switch (data.method) {
             case "start": {
-              currentUtterance = new Utterance(room);
+              currentUtterance = new Utterance(room, data.params.localTime);
               break;
             }
             case "audio": {

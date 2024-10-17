@@ -106,7 +106,7 @@ function createAudioSenderController(options: {
 
   let currentBlockCount = 0;
   type SocketEvent =
-    | { method: "start" }
+    | { method: "start"; params: { localTime: string } }
     | { method: "audio"; params: { data: string } }
     | { method: "stop" };
   let onEvent: (event: SocketEvent) => void = () => {};
@@ -208,7 +208,10 @@ function createAudioSenderController(options: {
             const id = `au${Date.now()}`;
             $active.set(id);
             currentBlockCount = 0;
-            onEvent({ method: "start" });
+            onEvent({
+              method: "start",
+              params: { localTime: new Date().toISOString() },
+            });
             log(`Utterance started`);
           }
         } else if ($active.get()) {

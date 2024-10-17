@@ -190,6 +190,8 @@ function TranscriptItem(props: {
   useEffect(() => {
     if (transcribed && wasUntranscribed && div.current && $autoScroll.get()) {
       const clientRect = div.current.getBoundingClientRect();
+      // Do not scroll if focusing on a text area.
+      if (document.activeElement instanceof HTMLTextAreaElement) return;
       scroller.scrollBy(
         clientRect.top + clientRect.height - (window.innerHeight - 140)
       );
