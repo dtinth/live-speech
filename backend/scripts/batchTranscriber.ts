@@ -22,6 +22,7 @@ interface HistoryItem {
   transcript: string;
 }
 
+let waiting = false;
 export async function processAudio(
   audio: ArrayBuffer,
   history: HistoryItem[] = [],
@@ -139,8 +140,17 @@ async function main() {
 
   const untranscribed = validItems.find((item) => item.transcript == null);
   if (!untranscribed) {
-    console.log("All transcribed!");
-    return;
+    if (!waiting) {
+      waiting = true;
+      process.stderr.write("Waiting for transcription...");
+    } else {
+      process.stderr.write(".");
+    }
+    return false;
+  }
+  if (waiting) {
+    process.stderr.write("\n");
+    waiting = false;
   }
   const allBefore = validItems.filter(
     (item) => item.start < untranscribed.start
@@ -169,6 +179,7 @@ async function main() {
       usageMetadata: result.usageMetadata,
     },
   });
+  return true;
 }
 
 async function loadAudio(id: string) {
@@ -178,6 +189,13 @@ async function loadAudio(id: string) {
 }
 
 for (;;) {
-  await main();
-  await new Promise((r) => setTimeout(r, 500));
+  try {
+    if (!(await main())) {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  } catch (error) {
+    console.error(error);
+  } finally {
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
