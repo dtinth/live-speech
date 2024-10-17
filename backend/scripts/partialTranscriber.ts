@@ -8,7 +8,9 @@ import { getRoomConfig } from "../src/client";
 const roomConfig = getRoomConfig();
 
 const websocket = new ReconnectingWebSocket(
-  `http://localhost:10300/rooms/${roomConfig.roomId}/audioEvents?key=${roomConfig.roomKey}`
+  `${process.env["SERVER_URL_BASE"]!.replace(/^http/, "ws")}/rooms/${
+    roomConfig.roomId
+  }/audioEvents?key=${roomConfig.roomKey}`
 );
 
 function isAbortError(e: any) {

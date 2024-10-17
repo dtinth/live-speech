@@ -24,7 +24,8 @@ interface HistoryItem {
 
 export async function processAudio(
   audio: ArrayBuffer,
-  history: HistoryItem[] = []
+  history: HistoryItem[] = [],
+  prior: string[] = []
 ) {
   const generationConfig: GenerationConfig = {
     maxOutputTokens: Math.min(8192, 300),
@@ -44,7 +45,12 @@ export async function processAudio(
           {
             role: "user",
             parts: [
-              { text: "Say exactly what you hear." },
+              {
+                text:
+                  (prior.length > 0
+                    ? `Prior transcriptions: ${JSON.stringify(prior)}\n\n`
+                    : "") + "Say exactly what you hear.",
+              },
               {
                 inlineData: {
                   mimeType: "audio/x-m4a",
@@ -136,10 +142,14 @@ async function main() {
     console.log("All transcribed!");
     return;
   }
-  const before = validItems
-    .filter((item) => item.start < untranscribed.start)
-    .slice(-5);
-
+  const allBefore = validItems.filter(
+    (item) => item.start < untranscribed.start
+  );
+  const before = allBefore.slice(-3);
+  const prior = allBefore
+    .slice(0, -3)
+    .flatMap((r) => (r.transcript ? [r.transcript] : []))
+    .slice(-37);
   const history = await Promise.all(
     before.map(async (item) => {
       const audio = await loadAudio(item.id);
@@ -147,7 +157,7 @@ async function main() {
     })
   );
   const audio = await loadAudio(untranscribed.id);
-  const result = await processAudio(audio, history);
+  const result = await processAudio(audio, history, prior);
   console.log(result);
   let { transcript } = JSON.parse(result.text) as { transcript: string };
   transcript = postProcess(transcript);

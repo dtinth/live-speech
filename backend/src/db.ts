@@ -1,6 +1,8 @@
+import { mkdirSync } from "fs";
 import { Partition, Persistence } from "./persistence";
 import type { Room } from "./room";
 
+mkdirSync(".data", { recursive: true });
 const persistence = new Persistence(".data/database.sqlite");
 
 export const db = {

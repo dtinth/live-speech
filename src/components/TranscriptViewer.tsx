@@ -118,7 +118,7 @@ function TranscriptViewerView(props: { backendContext: BackendContext }) {
           fontFamily: "Sarabun, sans-serif",
           letterSpacing: "0.1ch",
           fontSize: "20px",
-          paddingBottom: "50vh",
+          paddingBottom: "75vh",
         }}
       >
         {items.map((item) => {
@@ -137,7 +137,7 @@ function TranscriptItem(props: { item: ViewerTranscriptItem; viewer: Viewer }) {
   const [isEditing, setIsEditing] = useState<false | { width: number }>(false);
 
   const handleClick = () => {
-    if (viewer.editable && state.finish) {
+    if (viewer.editable && state.finish && !isEditing) {
       setIsEditing({ width: div.current?.offsetWidth ?? 0 });
     }
   };

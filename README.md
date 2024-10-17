@@ -41,3 +41,51 @@ This project aims to provide live speech transcription for tech events, specific
 - Support for mixed Thai and English technical content
 
 This system is designed to enhance the accessibility and documentation of Thai tech talks by providing accurate transcriptions that can handle the unique challenges of mixed-language technical presentations.
+
+## Environment variables
+
+```sh
+# For local development
+SERVER_URL_BASE=http://localhost:10300
+FRONTEND_URL_BASE=http://localhost:4321
+
+# Generate a random string for the secret key, e.g. using `openssl rand -hex 32`
+SERVICE_TOKEN=
+
+# For batch transcription
+GEMINI_API_KEY=
+```
+
+## Workflow
+
+1. Run the server:
+
+   ```sh
+   pnpm run server # or `pnpm run dev:server` to restart on file changes
+   ```
+
+2. Run the frontend:
+
+   ```sh
+   pnpm run dev
+   ```
+
+3. Create a room:
+
+   ```sh
+   pnpm run createRoom
+   ```
+
+4. Run partial transcriber:
+
+   ```sh
+   pnpm run partialTranscriber
+   ```
+
+5. Run batch transcriber:
+
+   ```sh
+   pnpm run batchTranscriber
+   ```
+
+6. Navigate to audio sender.
