@@ -117,7 +117,14 @@ function TranscriptViewerView(props: { backendContext: BackendContext }) {
       <h1>Transcript for room {props.backendContext.room}</h1>
       <div className="TranscriptViewer">
         {items.map((item) => {
-          return <TranscriptItem key={item.id} item={item} viewer={viewer} />;
+          return (
+            <TranscriptItem
+              start={formatTime(new Date(item.$state.get().start))}
+              key={item.id}
+              item={item}
+              viewer={viewer}
+            />
+          );
         })}
       </div>
       <TranscriptViewerOptions />
@@ -146,14 +153,18 @@ const scroller = (() => {
 })();
 
 function smoothScroll(amount: number) {
+  console.log(amount);
   let last = 0;
   let current = 0;
   amount = Math.round(amount);
   const frame = () => {
-    current += (current - amount) / 10;
+    current += (amount - current) / 5;
     const nextValue = Math.round(current);
     if (nextValue > last) {
-      window.scrollBy(0, nextValue - last);
+      window.scrollBy({
+        top: nextValue - last,
+        behavior: "instant",
+      });
       last = nextValue;
     }
     if (nextValue < amount) {
@@ -163,7 +174,11 @@ function smoothScroll(amount: number) {
   requestAnimationFrame(frame);
 }
 
-function TranscriptItem(props: { item: ViewerTranscriptItem; viewer: Viewer }) {
+function TranscriptItem(props: {
+  start: string;
+  item: ViewerTranscriptItem;
+  viewer: Viewer;
+}) {
   const div = useRef<HTMLDivElement>(null);
   const { item, viewer } = props;
   const state = useStore(item.$state);
@@ -175,7 +190,9 @@ function TranscriptItem(props: { item: ViewerTranscriptItem; viewer: Viewer }) {
   useEffect(() => {
     if (transcribed && wasUntranscribed && div.current && $autoScroll.get()) {
       const clientRect = div.current.getBoundingClientRect();
-      scroller.scrollBy(clientRect.top - window.innerHeight / 2);
+      scroller.scrollBy(
+        clientRect.top + clientRect.height - (window.innerHeight - 140)
+      );
     }
   }, [transcribed, wasUntranscribed]);
 
@@ -212,7 +229,12 @@ function TranscriptItem(props: { item: ViewerTranscriptItem; viewer: Viewer }) {
             width={isEditing.width}
           />
         ) : (
-          state.transcript ?? <i style={{ opacity: 0.5 }}>{partial ?? "…"}</i>
+          <>
+            {state.transcript ?? (
+              <i style={{ opacity: 0.5 }}>{partial ?? "…"}</i>
+            )}{" "}
+            <span className="TranscriptItem__time">{props.start}</span>
+          </>
         )}
       </div>
     </div>
@@ -223,6 +245,10 @@ interface EditableTranscriptProps {
   width: number;
   onSave: (newTranscript: string) => void;
   onCancel: () => void;
+}
+
+function formatTime(date: Date) {
+  return `${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function EditableTranscript({

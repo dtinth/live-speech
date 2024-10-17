@@ -14,6 +14,7 @@
   padding: 0.75rem 1rem;
   border-radius: 1rem;
   border: 1px solid transparent;
+  position: relative;
 }
 
 .TranscriptItem__content[data-transcribed="true"] {
@@ -22,4 +23,18 @@
 
 .TranscriptItem__content[data-editing="true"] {
   border-color: var(--bs-yellow);
+}
+
+.TranscriptItem__time {
+  display: block;
+  color: var(--bs-gray);
+  font-size: 0.5em;
+  position: absolute;
+  bottom: 0.2rem;
+  right: 0.7rem;
+  opacity: 0;
+}
+
+.TranscriptItem__content:hover .TranscriptItem__time {
+  opacity: 1;
 }
