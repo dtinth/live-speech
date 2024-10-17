@@ -229,4 +229,4 @@ fastify.get("/pcm/:id", async (req, reply) => {
     .send(wavBuffer);
 });
 
-fastify.listen({ port: 10300, host: "0.0.0.0" });
+fastify.listen({ port: 10300 });
