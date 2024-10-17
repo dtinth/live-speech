@@ -54,6 +54,14 @@ SERVICE_TOKEN=
 
 # For batch transcription
 GEMINI_API_KEY=
+
+# For partial transcription with Google
+PARTIAL_TRANSCRIBER_PROVIDER=google
+GOOGLE_APPLICATION_CREDENTIALS=
+
+# For partial transcription with local model (macOS only),
+# compile this CLI <https://github.com/dtinth/transcribe> and set
+# PARTIAL_TRANSCRIBER_PROVIDER=local
 ```
 
 ## Workflow

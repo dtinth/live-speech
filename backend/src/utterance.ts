@@ -18,7 +18,7 @@ export class Utterance {
     pubsub.publish(this.room.audioTopic, "audio_data", { id: this.id, base64 });
   }
   async finish() {
-    pubsub.publish(this.room.name, "audio_finish", { id: this.id });
+    pubsub.publish(this.room.audioTopic, "audio_finish", { id: this.id });
     const buffer = Buffer.concat(this.buffers);
     await db.audio.set(this.id, buffer.toString("base64"));
     await updateItem(this.room, this.id, {

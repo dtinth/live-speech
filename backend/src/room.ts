@@ -4,6 +4,6 @@ export class Room {
     return `${this.name}/audio`;
   }
   get publicTopic() {
-    return `${this.name}/audio`;
+    return `${this.name}/public`;
   }
 }

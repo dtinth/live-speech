@@ -1,6 +1,7 @@
+import { protos, v2 } from "@google-cloud/speech";
 import { spawn } from "child_process";
 import { createInterface } from "node:readline";
-import { Duplex, PassThrough } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import ReconnectingWebSocket from "reconnecting-websocket";
 import { getRoomConfig } from "../src/client";
@@ -34,14 +35,61 @@ function createTranscriber(
     if (isAbortError(error)) return;
     console.error("Transcriber process encountered error", error);
   });
-  return Duplex.from({
-    writable: child.stdin,
-    readable: child.stdout,
-  });
+  return async function* (source: AsyncIterable<Uint8Array>) {
+    Readable.from(source).pipe(child.stdin);
+    for await (const line of parseNdjson(child.stdout)) {
+      yield line;
+    }
+    child.kill();
+  };
 }
 
-async function* parseNdjson(source: NodeJS.ReadableStream) {
-  for await (const line of createInterface({ input: source })) {
+function createGoogleTranscriber(language: string, signal: AbortSignal) {
+  const client = new v2.SpeechClient();
+  const stream = client._streamingRecognize();
+  const createRequest = (
+    x: protos.google.cloud.speech.v2.IStreamingRecognizeRequest
+  ) => x;
+  return async function* (source: AsyncIterable<Uint8Array>) {
+    const inputStream = Readable.from(
+      (async function* () {
+        yield createRequest({
+          recognizer:
+            "projects/dtinth-audio-transcription/locations/global/recognizers/_",
+          streamingConfig: {
+            config: {
+              explicitDecodingConfig: {
+                encoding: "LINEAR16",
+                sampleRateHertz: 16000,
+                audioChannelCount: 1,
+              },
+              languageCodes: [language],
+              model: "short",
+            },
+            streamingFeatures: {
+              interimResults: true,
+            },
+          },
+        });
+        for await (const chunk of source) {
+          yield createRequest({ audio: chunk });
+        }
+      })()
+    );
+    inputStream.pipe(stream);
+    for await (const event of stream) {
+      const text = event?.results?.[0]?.alternatives?.[0]?.transcript;
+      if (text) {
+        yield { text };
+      } else {
+        console.warn("No text in event", JSON.stringify(event));
+      }
+    }
+  };
+}
+
+async function* parseNdjson(source: any) {
+  for await (const line of createInterface({ input: Readable.from(source) })) {
     if (line.trim()) {
       yield JSON.parse(line);
     }
@@ -66,18 +114,18 @@ class Transcription {
       await pipeline(
         this.input,
         new PassThrough(),
-        createTranscriber("th", false, this.abortController.signal),
+        process.env["PARTIAL_TRANSCRIBER_PROVIDER"] === "local"
+          ? createTranscriber("th", false, this.abortController.signal)
+          : createGoogleTranscriber("th-TH", this.abortController.signal),
         async (source) => {
-          for await (const event of parseNdjson(
-            source as NodeJS.ReadableStream
-          )) {
-            console.log("   -", event.text, event.isFinal);
+          for await (const { text } of source) {
+            console.log("   -", text);
             websocket.send(
               JSON.stringify({
                 method: "submit_partial_transcript",
                 params: {
                   id: this.id,
-                  transcript: event.text,
+                  transcript: text,
                 },
               })
             );
@@ -125,6 +173,10 @@ websocket.onmessage = (e) => {
       break;
     }
     case "audio_finish": {
+      if (currentTranscription) {
+        currentTranscription.finish();
+        currentTranscription = undefined;
+      }
       break;
     }
   }
