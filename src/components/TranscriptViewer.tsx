@@ -1,10 +1,12 @@
 import { useStore } from "@nanostores/react";
 import { atom, type WritableAtom } from "nanostores";
 import { ofetch } from "ofetch";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import ReconnectingWebSocket from "reconnecting-websocket";
 import type { BackendContext } from "../BackendContext";
+import "./TranscriptViewer.css";
+import { $autoScroll } from "./TranscriptViewerKnobs";
 
 export function TranscriptViewer() {
   const params = new URLSearchParams(window.location.search);
@@ -113,20 +115,52 @@ function TranscriptViewerView(props: { backendContext: BackendContext }) {
   return (
     <div>
       <h1>Transcript for room {props.backendContext.room}</h1>
-      <div
-        style={{
-          fontFamily: "Sarabun, sans-serif",
-          letterSpacing: "0.1ch",
-          fontSize: "20px",
-          paddingBottom: "75vh",
-        }}
-      >
+      <div className="TranscriptViewer">
         {items.map((item) => {
           return <TranscriptItem key={item.id} item={item} viewer={viewer} />;
         })}
       </div>
+      <TranscriptViewerOptions />
     </div>
   );
+}
+
+const scroller = (() => {
+  let toScroll = 0;
+  let timeout: number | undefined;
+  return {
+    scrollBy(v: number) {
+      console.log(v);
+      if (!timeout) {
+        timeout = setTimeout(() => {
+          const amount = toScroll;
+          toScroll = 0;
+          timeout = undefined;
+          if (amount < 0) return;
+          smoothScroll(amount);
+        }, 120) as unknown as number;
+      }
+      toScroll = Math.max(v, toScroll);
+    },
+  };
+})();
+
+function smoothScroll(amount: number) {
+  let last = 0;
+  let current = 0;
+  amount = Math.round(amount);
+  const frame = () => {
+    current += (current - amount) / 10;
+    const nextValue = Math.round(current);
+    if (nextValue > last) {
+      window.scrollBy(0, nextValue - last);
+      last = nextValue;
+    }
+    if (nextValue < amount) {
+      requestAnimationFrame(frame);
+    }
+  };
+  requestAnimationFrame(frame);
 }
 
 function TranscriptItem(props: { item: ViewerTranscriptItem; viewer: Viewer }) {
@@ -135,6 +169,15 @@ function TranscriptItem(props: { item: ViewerTranscriptItem; viewer: Viewer }) {
   const state = useStore(item.$state);
   const partial = useStore(item.$partial);
   const [isEditing, setIsEditing] = useState<false | { width: number }>(false);
+  const transcribed = state.transcript != null;
+  const [wasUntranscribed] = useState(!transcribed);
+
+  useEffect(() => {
+    if (transcribed && wasUntranscribed && div.current && $autoScroll.get()) {
+      const clientRect = div.current.getBoundingClientRect();
+      scroller.scrollBy(clientRect.top - window.innerHeight / 2);
+    }
+  }, [transcribed, wasUntranscribed]);
 
   const handleClick = () => {
     if (viewer.editable && state.finish && !isEditing) {
@@ -152,13 +195,12 @@ function TranscriptItem(props: { item: ViewerTranscriptItem; viewer: Viewer }) {
   };
 
   return (
-    <div className="mb-2 d-flex">
+    <div className="TranscriptItem">
       <div
-        className={"p-3 rounded border"}
-        style={{
-          borderColor: state.transcript ? undefined : "transparent",
-          cursor: viewer.editable && state.finish ? "pointer" : "default",
-        }}
+        className="TranscriptItem__content"
+        data-transcribed={transcribed ? "true" : "false"}
+        data-editable={viewer.editable && state.finish ? "true" : "false"}
+        data-editing={isEditing ? "true" : "false"}
         ref={div}
         onClick={handleClick}
       >
@@ -206,7 +248,6 @@ function EditableTranscript({
       value={value}
       onChange={(e) => setValue(e.target.value)}
       onKeyDown={handleKeyDown}
-      onBlur={() => onSave(value)}
       autoFocus
       style={{
         width: width || "100%",
@@ -220,5 +261,21 @@ function EditableTranscript({
         backgroundColor: "transparent",
       }}
     />
+  );
+}
+
+function TranscriptViewerOptions() {
+  const autoScroll = useStore($autoScroll);
+  return (
+    <div>
+      <label>
+        <input
+          type="checkbox"
+          checked={autoScroll}
+          onChange={() => $autoScroll.set(!autoScroll)}
+        />{" "}
+        Auto-scroll
+      </label>
+    </div>
   );
 }

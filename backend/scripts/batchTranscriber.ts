@@ -3,10 +3,12 @@ import {
   HarmBlockThreshold,
   HarmCategory,
   SchemaType,
-  type Content,
   type GenerationConfig,
+  type Part,
   type UsageMetadata,
 } from "@google/generative-ai";
+import { createHash } from "crypto";
+import { uuidv7 } from "uuidv7";
 import { createRoomApi, getRoomConfig, publicApi } from "../src/client";
 
 const api = createRoomApi(getRoomConfig());
@@ -23,49 +25,81 @@ interface HistoryItem {
 }
 
 let waiting = false;
+
+export interface TranscriptionItem {
+  id: string;
+  transcript: string;
+}
+
 export async function processAudio(
-  audio: ArrayBuffer,
+  audio: ArrayBuffer[],
   history: HistoryItem[] = [],
   prior: string[] = []
 ) {
   const generationConfig: GenerationConfig = {
-    maxOutputTokens: Math.min(8192, 300),
+    maxOutputTokens: 300,
     responseMimeType: "application/json",
     responseSchema: {
       type: SchemaType.OBJECT,
       properties: {
-        transcript: { type: SchemaType.STRING },
+        transcription: {
+          type: SchemaType.ARRAY,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              id: { type: SchemaType.STRING },
+              transcript: { type: SchemaType.STRING },
+            },
+          },
+        },
       },
     },
   };
+  const historyParts: Part[] = [
+    {
+      text:
+        `You are a professional transcriber. You will be given a series of audio files and their IDs in this format:
+
+id: <id>
+<audio file>
+
+Transcribe the speech in each audio file.
+At the end of the audio file there may be beeping sound, do not include it in the transcript.
+If there is no speech, return an empty string for the transcript.` +
+        (prior.length > 0
+          ? `
+
+Prior transcriptions: ${JSON.stringify(prior)}\n\n`
+          : "") +
+        `
+
+Transcribe the following audio files.`,
+    },
+  ];
+  const expected: TranscriptionItem[] = [];
+  for (const item of history) {
+    const buffer = Buffer.from(item.audio);
+    const id = createHash("md5").update(buffer).digest("hex").slice(0, 6);
+    historyParts.push({ text: "id: " + id });
+    historyParts.push({
+      inlineData: {
+        mimeType: "audio/x-m4a",
+        data: buffer.toString("base64"),
+      },
+    });
+    expected.push({ id, transcript: item.transcript });
+  }
   const chatSession = model.startChat({
     generationConfig: generationConfig,
     history: [
-      ...history.flatMap((item): Content[] => {
-        return [
-          {
-            role: "user",
-            parts: [
-              {
-                text:
-                  (prior.length > 0
-                    ? `Prior transcriptions: ${JSON.stringify(prior)}\n\n`
-                    : "") + "Say exactly what you hear.",
-              },
-              {
-                inlineData: {
-                  mimeType: "audio/x-m4a",
-                  data: Buffer.from(item.audio).toString("base64"),
-                },
-              },
-            ],
-          },
-          {
-            role: "model",
-            parts: [{ text: JSON.stringify({ transcript: item.transcript }) }],
-          },
-        ];
-      }),
+      {
+        role: "user",
+        parts: historyParts,
+      },
+      {
+        role: "model",
+        parts: [{ text: JSON.stringify({ transcription: expected }) }],
+      },
     ],
     safetySettings: [
       {
@@ -86,15 +120,25 @@ export async function processAudio(
       },
     ],
   });
-  const result = await chatSession.sendMessageStream([
-    { text: "Say exactly what you hear." },
-    {
+
+  const promptParts: Part[] = [];
+  const ids: string[] = [];
+  for (const item of audio) {
+    const buffer = Buffer.from(item);
+    const id = createHash("md5").update(buffer).digest("hex").slice(0, 6);
+    ids.push(id);
+    promptParts.push({ text: "id: " + id });
+    promptParts.push({
       inlineData: {
         mimeType: "audio/x-m4a",
-        data: Buffer.from(audio).toString("base64"),
+        data: buffer.toString("base64"),
       },
-    },
-  ]);
+    });
+  }
+
+  const result = await chatSession.sendMessageStream(promptParts, {
+    timeout: 5000,
+  });
   let usageMetadata: UsageMetadata | undefined;
   let text = "";
   let error = "";
@@ -112,7 +156,7 @@ export async function processAudio(
     error = String(e?.stack || e);
     // ctx.log("error", { error });
   }
-  return { usageMetadata, text, error };
+  return { usageMetadata, text, error, ids };
 }
 
 function postProcess(text: string) {
@@ -138,8 +182,8 @@ async function main() {
   const validItems = list.filter((item) => item.length > 0);
   validItems.sort((a, b) => a.start.localeCompare(b.start));
 
-  const untranscribed = validItems.find((item) => item.transcript == null);
-  if (!untranscribed) {
+  const untranscribed = validItems.filter((item) => item.transcript == null);
+  if (!untranscribed.length) {
     if (!waiting) {
       waiting = true;
       process.stderr.write("Waiting for transcription...");
@@ -153,7 +197,7 @@ async function main() {
     waiting = false;
   }
   const allBefore = validItems.filter(
-    (item) => item.start < untranscribed.start
+    (item) => item.start < untranscribed[0].start
   );
   const before = allBefore.slice(-3);
   const prior = allBefore
@@ -166,19 +210,37 @@ async function main() {
       return { audio, transcript: item.transcript! };
     })
   );
-  const audio = await loadAudio(untranscribed.id);
+  const audio = await Promise.all(
+    untranscribed.slice(0, 3).map((item) => loadAudio(item.id))
+  );
   const result = await processAudio(audio, history, prior);
-  console.log(result);
-  let { transcript } = JSON.parse(result.text) as { transcript: string };
-  transcript = postProcess(transcript);
-  await api(`/items/${untranscribed.id}`, {
-    method: "PATCH",
-    body: {
-      transcript,
-      transcriptBy: "gemini",
-      usageMetadata: result.usageMetadata,
-    },
-  });
+  let { transcription } = JSON.parse(result.text) as {
+    transcription: TranscriptionItem[];
+  };
+  const usageId = uuidv7();
+  for (const [i, item] of transcription.entries()) {
+    if (result.ids[i] !== item.id) {
+      console.warn(
+        "Prompt ID mismatch, expected",
+        item.id,
+        "but received",
+        result.ids[i]
+      );
+      continue;
+    }
+    const { id } = untranscribed[i];
+    const transcript = postProcess(item.transcript);
+    console.log(`${id} => ${JSON.stringify(transcript)}`);
+    await api(`/items/${id}`, {
+      method: "PATCH",
+      body: {
+        transcript,
+        transcriptBy: "gemini",
+        usageMetadata: result.usageMetadata,
+        usageId: usageId,
+      },
+    });
+  }
   return true;
 }
 

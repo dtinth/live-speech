@@ -14,6 +14,13 @@ const fastify = Fastify({
   logger: true,
 });
 await fastify.register(Websocket);
+
+// Add `Access-Control-Allow-Private-Network: true` to all responses
+fastify.addHook("onSend", (request, reply, payload, done) => {
+  reply.header("Access-Control-Allow-Private-Network", "true");
+  done();
+});
+
 await fastify.register(Cors);
 
 fastify.post("/admin/rooms", async (req, reply) => {

@@ -1,3 +1,4 @@
+import chalk from "chalk";
 import { adminApi } from "../src/client";
 
 const roomInfo = await adminApi<{
@@ -11,16 +12,21 @@ const backendUrl = process.env["SERVER_URL_BASE"];
 console.log(JSON.stringify(roomInfo, null, 2));
 
 console.log(`
-Viewer URL:
-  ${webUrl}/view?backend=${backendUrl}&room=${roomInfo.roomId}
+${chalk.yellow.bold("Viewer URL:")}
+${webUrl}/view?backend=${backendUrl}&room=${roomInfo.roomId}
 
-Editor URL:
-  ${webUrl}/view?backend=${backendUrl}&room=${roomInfo.roomId}&key=${roomInfo.roomKey}
+${chalk.yellow.bold("Editor URL:")}
+${webUrl}/view?backend=${backendUrl}&room=${roomInfo.roomId}&key=${
+  roomInfo.roomKey
+}
 
-Audio Sender URL:
-  ${webUrl}/sender?backend=${backendUrl}&room=${roomInfo.roomId}&key=${roomInfo.roomKey}
+${chalk.yellow.bold("Audio Sender URL:")}
+${webUrl}/sender?backend=${backendUrl}&room=${roomInfo.roomId}&key=${
+  roomInfo.roomKey
+}
 
-Environment variables:
-  export ROOM_ID=${roomInfo.roomId}
-  export ROOM_KEY=${roomInfo.roomKey}
+${chalk.bold("env:")}
+SERVER_URL_BASE=${backendUrl}
+ROOM_ID=${roomInfo.roomId}
+ROOM_KEY=${roomInfo.roomKey}
 `);
