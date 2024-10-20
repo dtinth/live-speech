@@ -21,6 +21,10 @@
   border-color: var(--bs-border-color);
 }
 
+.TranscriptItem__content[data-needs-correction="true"] {
+  color: var(--bs-yellow);
+}
+
 .TranscriptItem__content[data-editing="true"] {
   border-color: var(--bs-yellow);
 }
@@ -33,6 +37,7 @@
   bottom: 0.2rem;
   right: 0.7rem;
   opacity: 0;
+  user-select: none;
 }
 
 .TranscriptItem__content:hover .TranscriptItem__time {

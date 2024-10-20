@@ -42,7 +42,20 @@ This project aims to provide live speech transcription for tech events, specific
 
 This system is designed to enhance the accessibility and documentation of Thai tech talks by providing accurate transcriptions that can handle the unique challenges of mixed-language technical presentations.
 
-## Environment variables
+## Setup
+
+```sh
+# Install Node.js
+mise install
+
+# Enable corepack
+corepack enable
+
+# Install dependencies
+pnpm install
+```
+
+`.env`:
 
 ```sh
 # For local development
@@ -55,14 +68,40 @@ SERVICE_TOKEN=
 # For batch transcription
 GEMINI_API_KEY=
 
+# Change to "pro" for better transcription quality at higher cost
+GEMINI_MODEL=flash
+
+# For partial transcription with Speechmatics
+PARTIAL_TRANSCRIBER_PROVIDER=speechmatics
+SPEECHMATICS_API_KEY=
+
 # For partial transcription with Google
-PARTIAL_TRANSCRIBER_PROVIDER=google
-GOOGLE_APPLICATION_CREDENTIALS=
+# PARTIAL_TRANSCRIBER_PROVIDER=google
+# GOOGLE_APPLICATION_CREDENTIALS=
 
 # For partial transcription with local model (macOS only),
 # compile this CLI <https://github.com/dtinth/transcribe> and set
 # PARTIAL_TRANSCRIBER_PROVIDER=local
 ```
+
+## How much does it cost?
+
+The numbers are **approximate** and depends on which models you use.
+
+Google Speech-To-Text model has lower latency (from Thailand) and cheaper, but performs worse than Speechmatics for Thai contents.
+
+| Partial transcription model | Price per hour |
+| --------------------------- | -------------- |
+| `local`                     | $0.00          |
+| `google`                    | $0.81          |
+| `speechmatics`              | $1.18          |
+
+Gemini Flash works great for Thai contents, but for English content Gemini Pro is recommended for better punctuation insertion.
+
+| Batch transcription model | Price per hour |
+| ------------------------- | -------------- |
+| Gemini Flash              | $0.18          |
+| Gemini Pro                | $2.97          |
 
 ## Workflow
 

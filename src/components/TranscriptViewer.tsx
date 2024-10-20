@@ -1,12 +1,41 @@
 import { useStore } from "@nanostores/react";
-import { atom, type WritableAtom } from "nanostores";
+import { atom, computed, type WritableAtom } from "nanostores";
 import { ofetch } from "ofetch";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import ReconnectingWebSocket from "reconnecting-websocket";
 import type { BackendContext } from "../BackendContext";
 import "./TranscriptViewer.css";
-import { $autoScroll } from "./TranscriptViewerKnobs";
+import { $autoCorrects, $autoScroll } from "./TranscriptViewerKnobs";
+
+const $autocorrectables = atom<React.RefObject<HTMLDivElement>[]>([]);
+
+const $autoCorrector = computed([$autoCorrects], (autoCorrects) => {
+  const items = autoCorrects
+    .split(",")
+    .map((x) => x.trim())
+    .filter((x) => x)
+    .flatMap((x) => {
+      const [from, to] = x.split("=>").map((x) => x.trim());
+      if (!from || !to) return [];
+      return [{ from, to }];
+    });
+  return {
+    correct: (text: string) => {
+      let correctedText = text;
+      for (const { from, to } of items) {
+        const regex = new RegExp(from, "gi");
+        correctedText = correctedText.replace(regex, to);
+      }
+      // Add spaces between Thai and non-Thai words.
+      correctedText = correctedText
+        .replace(/([ก-๙])([a-zA-Z0-9])/g, "$1 $2")
+        .replace(/([a-zA-Z0-9])([ก-๙])/g, "$1 $2")
+        .trim();
+      return correctedText;
+    },
+  };
+});
 
 export function TranscriptViewer() {
   const params = new URLSearchParams(window.location.search);
@@ -89,6 +118,9 @@ function createViewer(backendContext: BackendContext) {
         }
       );
     },
+    getAudioUrl(id: string) {
+      return `${backendContext.backend}/pcm/${id}`;
+    },
   };
 }
 
@@ -127,7 +159,7 @@ function TranscriptViewerView(props: { backendContext: BackendContext }) {
           );
         })}
       </div>
-      <TranscriptViewerOptions />
+      <TranscriptViewerOptions viewer={viewer} />
     </div>
   );
 }
@@ -180,12 +212,30 @@ function TranscriptItem(props: {
   viewer: Viewer;
 }) {
   const div = useRef<HTMLDivElement>(null);
+  const text = useRef<HTMLDivElement>(null);
   const { item, viewer } = props;
   const state = useStore(item.$state);
   const partial = useStore(item.$partial);
   const [isEditing, setIsEditing] = useState<false | { width: number }>(false);
   const transcribed = state.transcript != null;
   const [wasUntranscribed] = useState(!transcribed);
+  const corrector = useStore($autoCorrector);
+  const corrected = useMemo(() => {
+    if (!state.transcript || !viewer.editable) return state.transcript;
+    return corrector.correct(state.transcript);
+  }, [corrector, state.transcript, viewer.editable]);
+
+  const needsCorrection = corrected !== state.transcript;
+  const autoCorrectableAdded = useRef(false);
+  useEffect(() => {
+    if (needsCorrection && !autoCorrectableAdded.current) {
+      $autocorrectables.set([...$autocorrectables.get(), div]);
+      autoCorrectableAdded.current = true;
+    } else if (!needsCorrection && autoCorrectableAdded.current) {
+      $autocorrectables.set($autocorrectables.get().filter((x) => x !== div));
+      autoCorrectableAdded.current = false;
+    }
+  }, [needsCorrection]);
 
   useEffect(() => {
     if (transcribed && wasUntranscribed && div.current && $autoScroll.get()) {
@@ -198,9 +248,14 @@ function TranscriptItem(props: {
     }
   }, [transcribed, wasUntranscribed]);
 
-  const handleClick = () => {
+  const handleClick = (e: React.MouseEvent) => {
+    if (e.altKey && needsCorrection && corrected) {
+      viewer.updateTranscript(item.id, corrected);
+      return;
+    }
     if (viewer.editable && state.finish && !isEditing) {
-      setIsEditing({ width: div.current?.offsetWidth ?? 0 });
+      const width = text.current?.offsetWidth;
+      setIsEditing({ width: width == null ? 0 : width + 2 });
     }
   };
 
@@ -213,6 +268,23 @@ function TranscriptItem(props: {
     setIsEditing(false);
   };
 
+  const listen = () => {
+    const myWindow = window as { currentAudio?: HTMLAudioElement };
+    const audio = (myWindow.currentAudio ??= new Audio());
+    const src = viewer.getAudioUrl(item.id);
+    if (!audio.paused && audio.src === src) {
+      audio.pause();
+    } else {
+      document.body.append(audio);
+      audio.src = src;
+      audio.load();
+      audio.currentTime = 0;
+      audio.play();
+    }
+    const textarea = div.current?.querySelector("textarea");
+    if (textarea) textarea.focus();
+  };
+
   return (
     <div className="TranscriptItem">
       <div
@@ -220,23 +292,41 @@ function TranscriptItem(props: {
         data-transcribed={transcribed ? "true" : "false"}
         data-editable={viewer.editable && state.finish ? "true" : "false"}
         data-editing={isEditing ? "true" : "false"}
+        data-needs-correction={needsCorrection ? "true" : "false"}
         ref={div}
         onClick={handleClick}
       >
         {isEditing ? (
-          <EditableTranscript
-            initialValue={state.transcript || ""}
-            onSave={handleSave}
-            onCancel={handleCancel}
-            width={isEditing.width}
-          />
+          <div className="d-flex">
+            <EditableTranscript
+              initialValue={state.transcript || ""}
+              onSave={handleSave}
+              onCancel={handleCancel}
+              width={isEditing.width}
+            />
+            <div
+              style={{
+                position: "absolute",
+                top: -2,
+                right: 0,
+                transform: "translateY(-100%)",
+              }}
+            >
+              <button onClick={listen} className="btn">
+                👂
+              </button>
+              <button onClick={handleCancel} className="btn">
+                ❌
+              </button>
+            </div>
+          </div>
         ) : (
-          <>
+          <div ref={text}>
             {state.transcript ?? (
               <i style={{ opacity: 0.5 }}>{partial ?? "…"}</i>
             )}{" "}
             <span className="TranscriptItem__time">{props.start}</span>
-          </>
+          </div>
         )}
       </div>
     </div>
@@ -292,18 +382,81 @@ function EditableTranscript({
   );
 }
 
-function TranscriptViewerOptions() {
+function TranscriptViewerOptions({ viewer }: { viewer: Viewer }) {
   const autoScroll = useStore($autoScroll);
+  const toCorrect = useStore($autocorrectables).length;
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Do not process keydown events when editing a text area.
+      if (document.activeElement instanceof HTMLTextAreaElement) return;
+      console.log(e.key);
+      if (e.key === "s") {
+        $autoScroll.set(!autoScroll);
+      }
+      if (e.key === "x") {
+        document.querySelector<HTMLButtonElement>("#autoCorrectables")?.click();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+
   return (
     <div className="TranscriptViewerOptions">
-      <label>
-        <input
-          type="checkbox"
-          checked={autoScroll}
-          onChange={() => $autoScroll.set(!autoScroll)}
-        />{" "}
-        Auto-scroll
-      </label>
+      <div className="d-flex gap-3 align-items-center">
+        <label>
+          <input
+            type="checkbox"
+            checked={autoScroll}
+            onChange={() => $autoScroll.set(!autoScroll)}
+          />{" "}
+          Auto-scroll
+        </label>
+        {viewer.editable && (
+          <button
+            className="btn btn-sm btn-outline-secondary"
+            id="autoCorrectables"
+            onClick={(e) => {
+              if (e.altKey) {
+                const before = $autoCorrects.get();
+                const after = prompt("Autocorrects", before);
+                if (after != null) {
+                  $autoCorrects.set(after);
+                }
+              } else {
+                $autocorrectables
+                  .get()[0]
+                  .current?.scrollIntoView({ behavior: "instant" });
+              }
+            }}
+          >
+            Autocorrect ({toCorrect})
+          </button>
+        )}
+        <button
+          className="btn btn-sm btn-outline-secondary"
+          onClick={(e) => {
+            const tsvContent = exportTsv(viewer);
+            navigator.clipboard.writeText(tsvContent);
+          }}
+        >
+          Copy TSV
+        </button>
+      </div>
     </div>
   );
+}
+
+function exportTsv(viewer: Viewer) {
+  const items = viewer.$items.get();
+  const tsvContent = items
+    .map((item) => {
+      const state = item.$state.get();
+      return `${state.start}\t${state.finish}\t${state.transcript || ""}`;
+    })
+    .join("\n");
+  return tsvContent;
 }
