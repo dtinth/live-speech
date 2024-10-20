@@ -217,7 +217,7 @@ class Transcription {
         this.input,
         new PassThrough(),
         process.env["PARTIAL_TRANSCRIBER_PROVIDER"] === "speechmatics"
-          ? createSpeechmaticsTranscriber("th", this.abortController.signal)
+          ? createSpeechmaticsTranscriber(process.env['TRANSCRIBER_LANG'] || "th", this.abortController.signal)
           : process.env["PARTIAL_TRANSCRIBER_PROVIDER"] === "local"
           ? createTranscriber("th", false, this.abortController.signal)
           : createGoogleTranscriber("th-TH", this.abortController.signal),
