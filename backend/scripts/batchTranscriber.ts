@@ -15,9 +15,11 @@ const api = createRoomApi(getRoomConfig());
 
 const apiKey = process.env["GEMINI_API_KEY"]!;
 const genAI = new GoogleGenerativeAI(apiKey);
+const modelName = process.env['GEMINI_MODEL'] === 'pro' ? "gemini-1.5-pro-002" : "gemini-1.5-flash-002";
 export const model = genAI.getGenerativeModel({
-  model: "gemini-1.5-flash-002",
+  model: modelName,
 });
+console.log('Using model:', modelName);
 
 interface HistoryItem {
   audio: ArrayBuffer;
@@ -75,6 +77,8 @@ Transcribe the speech in each audio file. Follow the style guide when transcribi
 - For English words, if it is a common word, then spell it using lowercase (e.g. oscillator). If it is a proper noun, capitalize it properly (e.g. Google Chrome). If it's an API name or part of computer code, use verbatim capitalization (e.g. getElementById).
 - For Thai text, do not add a space between words. Only add spaces between sentences or when there is obvious pausing.
 - Add spaces between Thai words and foreign words.
+- For English sentences, add punctuation marks as appropriate. For example, add periods at the end of sentences (or a question mark if the speaker is asking a question), and add commas and hyphens where it should be used. Sometimes our speakers are not fluent in English, so please fix the disfluency (such as "um"'s and "uh"'s, stuttering and stammering). Also fix minor grammatical mistakes, for example, "everyone like" should be "everyone likes." (Only fix minor mistakes though!)
+- For English sentences, capitalize the first word of the sentence so it is easier to read.
 - For technical terms, in general, spell it in English (e.g. canvas, vertex, scene). Only transliterate it to Thai if it is a very common word and commonly spelled in Thai (e.g. ลิงก์, เคส, อัพเกรด, โปรแกรมเมอร์).
 - Remove filler words like "umm" and "ah". Also fix the transcript when the speaker corrects themselves or repeats themselves due to stuttering.
 - At the end of the audio file there may be beeping sound, do not include it in the transcript.
@@ -144,7 +148,7 @@ Transcribe the following audio files.`,
   }
 
   const result = await chatSession.sendMessageStream(promptParts, {
-    timeout: 5000,
+    timeout: 15000,
   });
   let usageMetadata: UsageMetadata | undefined;
   let text = "";
@@ -182,7 +186,7 @@ function postProcess(text: string) {
   );
 }
 
-async function main() {
+async function main({ maxMessages }: { maxMessages: number }) {
   const list = await api<
     {
       id: string;
@@ -225,9 +229,10 @@ async function main() {
     })
   );
   const audio = await Promise.all(
-    untranscribed.slice(0, 3).map((item) => loadAudio(item.id))
+    untranscribed.slice(0, maxMessages).map((item) => loadAudio(item.id))
   );
   const result = await processAudio(audio, history, prior);
+  console.debug('Gemini result', result);
   let { transcription } = JSON.parse(result.text) as {
     transcription: TranscriptionItem[];
   };
@@ -249,7 +254,7 @@ async function main() {
       method: "PATCH",
       body: {
         transcript,
-        transcriptBy: "gemini",
+        transcriptBy: modelName,
         usageMetadata: result.usageMetadata,
         usageId: usageId,
       },
@@ -264,13 +269,27 @@ async function loadAudio(id: string) {
   );
 }
 
+const initialHp = 5;
+let hp = initialHp;
 for (;;) {
   try {
-    if (!(await main())) {
+    if (!(await main({ maxMessages: hp }))) {
       await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (hp < initialHp) {
+      hp = initialHp;
+      console.error('HP has been restored to', hp);
     }
   } catch (error) {
     console.error(error);
+    hp--;
+    if (hp <= 0) {
+      console.error('Giving up');
+      process.exit(1);
+      break;
+    } else {
+      console.error('HP has been reduced to', hp);
+    }
   } finally {
     await new Promise((r) => setTimeout(r, 100));
   }
