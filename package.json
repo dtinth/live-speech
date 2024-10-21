@@ -23,6 +23,7 @@
     "@google/generative-ai": "^0.21.0",
     "@keyv/sqlite": "^4.0.1",
     "@nanostores/react": "^0.7.3",
+    "@ricky0123/vad-web": "^0.0.19",
     "@stablelib/base64": "^2.0.0",
     "@thai/html": "npm:@jsr/thai__html@0.1.0-alpha.0",
     "@types/react": "^18.3.8",

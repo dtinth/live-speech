@@ -13,6 +13,20 @@ import {
 import { log } from "../logbus";
 import { LogViewer } from "./LogViewer";
 
+import { FrameProcessor, NonRealTimeVAD } from "@ricky0123/vad-web";
+
+async function initVad() {
+  const vad = await NonRealTimeVAD.new({
+    modelURL:
+      "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/silero_vad.onnx",
+    ortConfig(ort) {
+      ort.env.wasm.wasmPaths =
+        "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
+    },
+  });
+  return vad;
+}
+
 let audioContext: AudioContext | null = null;
 function getAudioContext() {
   return (audioContext ??= new AudioContext({ sampleRate: 16000 }));
@@ -104,6 +118,15 @@ function createAudioSenderController(options: {
   const $pendingEventCount = atom(0);
   const $started = atom(false);
 
+  const vadPromise = initVad();
+  const $vad = atom<NonRealTimeVAD | null>(null);
+  vadPromise.then((vad) => {
+    $vad.set(vad);
+    $minimumLevel.set(100);
+    $activationThreshold.set(0.5);
+    $deactivationThreshold.set(0.35);
+  });
+
   let currentBlockCount = 0;
   type SocketEvent =
     | { method: "start"; params: { localTime: string } }
@@ -176,14 +199,28 @@ function createAudioSenderController(options: {
       );
       source.connect(workletNode);
 
-      workletNode.port.onmessage = (event) => {
+      workletNode.port.onmessage = async (event) => {
         const data = new Int16Array(event.data);
-        // Calculate RMS
-        let sum = 0;
-        for (let i = 0; i < data.length; i++) {
-          sum += (data[i] / 32768) ** 2;
+        let level = 0;
+        if ($vad.get()) {
+          const vad = $vad.get()!;
+          // Convert Int16Array to Float32Array
+          const floatData = new Float32Array(data.length);
+          for (let i = 0; i < data.length; i++) {
+            floatData[i] = data[i] / 32768;
+          }
+          const result = await (
+            vad.frameProcessor as FrameProcessor
+          ).modelProcessFunc(floatData);
+          level = result.isSpeech;
+        } else {
+          // Calculate RMS
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) {
+            sum += (data[i] / 32768) ** 2;
+          }
+          level = Math.sqrt(sum / data.length) * Math.sqrt(2);
         }
-        const level = Math.sqrt(sum / data.length) * Math.sqrt(2);
         $level.set(level);
         if (level > $realMax.get()) {
           $realMax.set(level);
