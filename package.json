@@ -12,6 +12,7 @@
     "dev:server": "tsx --env-file=.env --watch backend/scripts/server.ts",
     "createRoom": "tsx --env-file=.env backend/scripts/createRoom.ts",
     "batchTranscriber": "tsx --env-file=.env backend/scripts/batchTranscriber.ts",
+    "groqTranscriber": "tsx --env-file=.env backend/scripts/groqTranscriber.ts",
     "partialTranscriber": "tsx --env-file=.env backend/scripts/partialTranscriber.ts"
   },
   "dependencies": {
@@ -32,6 +33,7 @@
     "buffer-es6": "^4.9.3",
     "chalk": "^5.3.0",
     "fastify": "^5.0.0",
+    "groq-sdk": "^0.7.0",
     "keyv": "^5.1.0",
     "nanostores": "^0.11.3",
     "ofetch": "^1.4.1",
