@@ -31,6 +31,7 @@ const $autoCorrector = computed([$autoCorrects], (autoCorrects) => {
       correctedText = correctedText
         .replace(/([ก-๙])([a-zA-Z0-9])/g, "$1 $2")
         .replace(/([a-zA-Z0-9])([ก-๙])/g, "$1 $2")
+        .replace(/ๆ(?!ๆ|\s|$)/g, "ๆ ")
         .trim();
       return correctedText;
     },
@@ -405,7 +406,10 @@ function TranscriptViewerOptions({ viewer }: { viewer: Viewer }) {
   }, []);
 
   return (
-    <div className="TranscriptViewerOptions">
+    <div
+      className="TranscriptViewerOptions"
+      data-editable={viewer.editable ? "true" : "false"}
+    >
       <div className="d-flex gap-3 align-items-center">
         <label>
           <input

@@ -57,7 +57,8 @@
 }
 
 .TranscriptViewerOptions:hover,
-.TranscriptViewerOptions:focus-within {
+.TranscriptViewerOptions:focus-within,
+.TranscriptViewerOptions[data-editable="true"] {
   transform: translateY(0);
   opacity: 1;
 }
