@@ -136,7 +136,7 @@ fastify.get(
       connection.close();
       return;
     }
-    connection.on("message", async (message) => {
+    connection.on("message", async (message: any) => {
       try {
         const data = JSON.parse(message.toString());
         if (data.method === "submit_partial_transcript") {
