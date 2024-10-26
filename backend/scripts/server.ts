@@ -87,7 +87,7 @@ fastify.get(
     }
 
     let currentUtterance: Utterance | undefined;
-    connection.on("message", async (message) => {
+    connection.on("message", async (message: any) => {
       try {
         const data = JSON.parse(message.toString());
         // JSON-RPC messages:
