@@ -1,6 +1,6 @@
 import { atom } from "nanostores";
 
-export const $autoScroll = atom(false);
+export const $autoScroll = atom(true);
 export const $autoCorrects = atom("โมนัด=>monad");
 
 // Save $autoCorrects to sessionStorage
