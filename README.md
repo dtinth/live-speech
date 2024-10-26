@@ -96,7 +96,7 @@ Google Speech-To-Text model has lower latency (from Thailand) and cheaper, but p
 | `google`                    | $0.81          |
 | `speechmatics`              | $1.18          |
 
-Gemini Flash works great for Thai contents, but for English content Gemini Pro is recommended for better punctuation insertion.
+Gemini Flash works great for Thai contents, but for English content [Gemini Pro is recommended for better punctuation insertion](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/audio-understanding#:~:text=Transcription%20punctuation%3A%20(if%20using%20Gemini%C2%A01.5%C2%A0Flash)%20The%20models%20might%20return%20transcriptions%20that%20don%27t%20include%20punctuation).
 
 | Batch transcription model | Price per hour |
 | ------------------------- | -------------- |
