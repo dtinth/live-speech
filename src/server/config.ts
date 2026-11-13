@@ -10,7 +10,7 @@ export interface Config {
   dataDir: string;
   masterPassword: string;
   provider: "fake" | "qwen";
-  qwen: { apiKey: string; model: string; url: string; language: string | undefined };
+  qwen: { apiKey: string; model: string; url: string; language: string | undefined; pricePerHourUsd: number };
   sockudo: { apiUrl: string; appId: string; key: string; secret: string; client: SockudoClientConfig } | null;
   catchUpSpeed: number;
 }
@@ -42,6 +42,9 @@ export function loadConfig(rawEnv: Record<string, string | undefined> = process.
     };
   }
 
+  const qwenPrice = Number(env.QWEN_PRICE_PER_HOUR_USD ?? 0.324);
+  if (!Number.isFinite(qwenPrice) || qwenPrice < 0) throw new Error("QWEN_PRICE_PER_HOUR_USD must be a number ≥ 0");
+
   return {
     port: Number(env.PORT ?? 3000),
     dataDir: env.DATA_DIR ?? "./data",
@@ -52,6 +55,9 @@ export function loadConfig(rawEnv: Record<string, string | undefined> = process.
       model: env.QWEN_MODEL ?? "qwen3-asr-flash-realtime",
       url: env.QWEN_URL ?? "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
       language: env.QWEN_LANGUAGE || undefined,
+      // $0.00009/s, Model Studio's international list price for
+      // qwen3-asr-flash-realtime as of 2026-11. Check your region's rate.
+      pricePerHourUsd: qwenPrice,
     },
     sockudo,
     catchUpSpeed: Number(env.CATCHUP_SPEED ?? 1.5),

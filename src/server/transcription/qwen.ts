@@ -7,6 +7,8 @@ export interface QwenConfig {
   url: string;
   /** Optional language hint such as "th"; omitted means auto-detect. */
   language?: string;
+  /** USD per hour of audio fed; the vendor bills input audio duration. */
+  pricePerHourUsd: number;
 }
 
 /**
@@ -21,6 +23,7 @@ export interface QwenConfig {
 export function createQwenProvider(config: QwenConfig): TranscriptionProvider {
   return {
     name: config.model,
+    pricePerHourUsd: config.pricePerHourUsd,
     createSession(callbacks: TranscriptionCallbacks): TranscriptionSession {
       const ws = new WebSocket(`${config.url}?model=${encodeURIComponent(config.model)}`, {
         headers: { Authorization: `Bearer ${config.apiKey}`, "OpenAI-Beta": "realtime=v1" },

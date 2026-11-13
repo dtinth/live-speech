@@ -6,6 +6,8 @@ import type { TranscriptionProvider, TranscriptionSession } from "./transcriptio
 
 /** At most this much audio (2 s) may be fed in one burst. */
 const MAX_CREDIT_CHUNKS = 20;
+/** Usage is written to the database at least this often while feeding. */
+const USAGE_FLUSH_MS = 5000;
 
 export interface TranscriberOptions {
   /**
@@ -94,6 +96,9 @@ class StreamWorker {
   private timerIsIdleWait = false;
   private stopped = false;
   private finishing = false;
+  /** Fed audio and opened sessions not yet recorded in usage. */
+  private unbilledMs = 0;
+  private unbilledSessions = 0;
   private resolveDone!: () => void;
   readonly done = new Promise<void>((resolve) => (this.resolveDone = resolve));
 
@@ -118,6 +123,7 @@ class StreamWorker {
   stop() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
+    this.recordUsage();
     this.session?.close();
     this.decoder?.dispose();
     this.resolveDone();
@@ -126,6 +132,7 @@ class StreamWorker {
   private exit() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
+    this.recordUsage();
     this.session?.close();
     this.session = null;
     this.decoder?.dispose();
@@ -179,7 +186,11 @@ class StreamWorker {
         return this.exit();
       }
     }
-    if (fed > 0) this.lastFedAt = now;
+    if (fed > 0) {
+      this.lastFedAt = now;
+      this.unbilledMs += fed * CHUNK_MS;
+      if (this.unbilledMs >= USAGE_FLUSH_MS) this.recordUsage();
+    }
     if (speed !== Infinity) this.credit -= fed;
 
     const caughtUp = this.nextSeq >= stream.chunkCount;
@@ -231,6 +242,7 @@ class StreamWorker {
       onClose: (error) => {
         if (this.session !== session) return;
         this.session = null;
+        this.recordUsage();
         this.finishing = false;
         // Whatever was still in progress won't be finished by this session.
         if (this.rooms.getPartials(roomId).some((p) => p.streamId === this.streamId)) {
@@ -247,6 +259,25 @@ class StreamWorker {
       },
     });
     this.session = session;
+    this.unbilledSessions++;
+  }
+
+  /** Writes fed audio to the usage table, priced at the provider's current rate. */
+  private recordUsage() {
+    if (this.unbilledMs === 0 && this.unbilledSessions === 0) return;
+    const audioMs = this.unbilledMs;
+    try {
+      this.rooms.addUsage(this.streamId, this.provider.name, {
+        audioMs,
+        sessions: this.unbilledSessions,
+        costUsd: (audioMs / 3_600_000) * this.provider.pricePerHourUsd,
+      });
+      this.unbilledMs = 0;
+      this.unbilledSessions = 0;
+    } catch (e) {
+      // Keep the count and try again on the next flush.
+      console.error(`[transcriber] stream ${this.streamId}: recording usage failed:`, (e as Error).message);
+    }
   }
 
   private finishSession() {

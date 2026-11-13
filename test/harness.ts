@@ -35,7 +35,8 @@ export class TestServer {
       port: 0,
       dataDir: this.dataDir,
       masterPassword: MASTER,
-      provider: createFakeProvider(),
+      // $3.60/h is $0.0001 per 100 ms chunk, which keeps cost assertions readable.
+      provider: createFakeProvider({ pricePerHourUsd: 3.6 }),
       publisher: this.publisher,
       sockudoClient: null,
       transcriber: { catchUpSpeed: Infinity, idleMs: 50, retryMs: 50 },

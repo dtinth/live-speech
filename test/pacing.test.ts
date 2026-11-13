@@ -19,6 +19,7 @@ async function setup(transcriber: { catchUpSpeed: number; idleMs: number }) {
     transcriber: { ...transcriber, retryMs: 50 },
     provider: {
       name: "recorder",
+      pricePerHourUsd: 0,
       createSession: () => ({
         sendAudio: () => void fedAt.push(performance.now()),
         finish() {},

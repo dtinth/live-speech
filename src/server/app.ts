@@ -71,27 +71,37 @@ export function startApp(options: AppOptions): App {
       return room ? handler(req, room) : error(404, "No such room");
     };
 
-  const withRoomPassword =
-    <P extends string>(handler: (req: BunRequest<P>, room: Room) => Response | Promise<Response>) =>
+  const withRoomPassword = <P extends string>(
+    handler: (req: BunRequest<P>, room: Room) => Response | Promise<Response>,
+  ) =>
     withRoom<P>((req, room) =>
       safeEqual(bearer(req), room.password) || isAdmin(req) ? handler(req, room) : error(401, "Wrong room password"),
     );
 
   const publicRoom = (room: Room) => ({ id: room.id, name: room.name, createdAt: room.createdAt });
 
-  const adminRoom = (room: Room) => ({
-    ...room,
-    streams: rooms.listStreams(room.id).map((s) => ({
-      id: s.id,
-      format: s.format,
-      createdAt: s.createdAt,
-      startedAt: s.startedAt,
-      clockRtt: s.clockRtt,
-      durationMs: s.chunkCount * CHUNK_MS,
-      transcribedMs: s.transcribedUntil * CHUNK_MS,
-      ended: s.ended,
-    })),
-  });
+  const adminRoom = (room: Room) => {
+    const usage = rooms.listUsage(room.id);
+    return {
+      ...room,
+      usage: {
+        audioMs: usage.reduce((n, u) => n + u.audioMs, 0),
+        costUsd: usage.reduce((n, u) => n + u.costUsd, 0),
+        byStream: usage,
+      },
+      streams: rooms.listStreams(room.id).map((s) => ({
+        id: s.id,
+        format: s.format,
+        createdAt: s.createdAt,
+        startedAt: s.startedAt,
+        clockRtt: s.clockRtt,
+        durationMs: s.chunkCount * CHUNK_MS,
+        transcribedMs: s.transcribedUntil * CHUNK_MS,
+        ended: s.ended,
+        costUsd: usage.filter((u) => u.streamId === s.id).reduce((n, u) => n + u.costUsd, 0),
+      })),
+    };
+  };
 
   const snapshot = (room: Room) => ({
     room: publicRoom(room),
@@ -195,7 +205,8 @@ export function startApp(options: AppOptions): App {
       }),
 
       "/api/rooms/:roomId/transcript.txt": withRoom(
-        (_req, room) => new Response(transcriptText(room), { headers: { "content-type": "text/plain; charset=utf-8" } }),
+        (_req, room) =>
+          new Response(transcriptText(room), { headers: { "content-type": "text/plain; charset=utf-8" } }),
       ),
 
       "/api/rooms/:roomId/transcript.json": withRoom((_req, room) => {
@@ -293,12 +304,14 @@ export function startApp(options: AppOptions): App {
             if (!version) return error(400, "No such version");
             text = version.text;
           } else if (typeof body.text === "string") {
-            if (body.text.length > MAX_SEGMENT_TEXT) return error(413, `Text is limited to ${MAX_SEGMENT_TEXT} characters`);
+            if (body.text.length > MAX_SEGMENT_TEXT)
+              return error(413, `Text is limited to ${MAX_SEGMENT_TEXT} characters`);
             text = body.text;
           } else {
             return error(400, "Send { text } or { revertTo: <version seq> }");
           }
-          const author = typeof body.author === "string" && body.author.trim() ? body.author.trim().slice(0, 100) : "anonymous";
+          const author =
+            typeof body.author === "string" && body.author.trim() ? body.author.trim().slice(0, 100) : "anonymous";
           if (text === segment.text) return json(segment);
           rooms.appendEvent(room.id, { type: "segment.edited", segmentId: segment.id, text, author });
           return json(rooms.getTranscript(room.id).segments[segment.id]);

@@ -9,9 +9,10 @@ import type { TranscriptionProvider, TranscriptionSession, TranscriptionCallback
  * the current segment. So a test can script a transcript by filling chunks
  * with constant sample values, and a real mic produces plausible segments.
  */
-export function createFakeProvider({ threshold = 500 } = {}): TranscriptionProvider {
+export function createFakeProvider({ threshold = 500, pricePerHourUsd = 0 } = {}): TranscriptionProvider {
   return {
     name: "fake",
+    pricePerHourUsd,
     createSession(callbacks: TranscriptionCallbacks): TranscriptionSession {
       let buffer = new Uint8Array(0);
       let position = 0; // ms of audio consumed

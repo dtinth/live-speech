@@ -24,6 +24,9 @@ export interface TranscriptionSession {
 }
 
 export interface TranscriptionProvider {
+  /** The model; recorded as each segment's source and in usage. */
   readonly name: string;
+  /** What the vendor charges per hour of audio fed, in USD (0 if free). */
+  readonly pricePerHourUsd: number;
   createSession(callbacks: TranscriptionCallbacks): TranscriptionSession;
 }

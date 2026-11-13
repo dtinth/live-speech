@@ -44,6 +44,18 @@ CREATE TABLE IF NOT EXISTS events (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (room_id, seq)
 );
+
+-- What the transcription vendor billed, per stream and model. Audio fed twice
+-- (a retry after a vendor error, a re-transcription) is billed twice.
+-- cost_usd accrues at the price in effect when the audio was fed.
+CREATE TABLE IF NOT EXISTS usage (
+  stream_id TEXT NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  audio_ms INTEGER NOT NULL DEFAULT 0,
+  sessions INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (stream_id, model)
+);
 `;
 
 export function openDatabase(dataDir: string): Database {

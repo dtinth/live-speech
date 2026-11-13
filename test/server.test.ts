@@ -46,11 +46,17 @@ describe("rooms and access", () => {
 
   test("the room password authenticates; regenerating it revokes the old one", async () => {
     const room = await server.createRoom();
-    expect((await server.fetch(`/api/rooms/${room.id}/auth`, { method: "POST", auth: room.password })).status).toBe(200);
+    expect((await server.fetch(`/api/rooms/${room.id}/auth`, { method: "POST", auth: room.password })).status).toBe(
+      200,
+    );
     expect((await server.fetch(`/api/rooms/${room.id}/auth`, { method: "POST", auth: "wrong" })).status).toBe(401);
     const updated = await server.json(`/api/admin/rooms/${room.id}/password`, { method: "POST", auth: MASTER });
-    expect((await server.fetch(`/api/rooms/${room.id}/auth`, { method: "POST", auth: room.password })).status).toBe(401);
-    expect((await server.fetch(`/api/rooms/${room.id}/auth`, { method: "POST", auth: updated.password })).status).toBe(200);
+    expect((await server.fetch(`/api/rooms/${room.id}/auth`, { method: "POST", auth: room.password })).status).toBe(
+      401,
+    );
+    expect((await server.fetch(`/api/rooms/${room.id}/auth`, { method: "POST", auth: updated.password })).status).toBe(
+      200,
+    );
   });
 
   test("a sender with the wrong password is turned away", async () => {
@@ -224,6 +230,36 @@ describe("robustness", () => {
     expect(db.query("SELECT count(*) AS n FROM chunks").get()).toEqual({ n: 0 });
     expect(db.query("SELECT count(*) AS n FROM events").get()).toEqual({ n: 0 });
     db.close();
+  });
+
+  test("the cost of transcription is tracked per stream and survives export", async () => {
+    const room = await server.createRoom();
+    (await sendScript(room.id, room.password, [1000, 1001, 0, 0, 2000, 0])).close();
+    await server.settle();
+    const [admin] = await server.json("/api/admin/rooms", { auth: MASTER });
+    expect(admin.usage.audioMs).toBe(600);
+    expect(admin.usage.costUsd).toBeCloseTo(0.0006, 10);
+    expect(admin.usage.byStream).toEqual([
+      { streamId: STREAM, model: "fake", audioMs: 600, sessions: 1, costUsd: expect.closeTo(0.0006, 10) },
+    ]);
+    expect(admin.streams[0].costUsd).toBeCloseTo(0.0006, 10);
+
+    const res = await server.fetch(`/api/admin/rooms/${room.id}/export`, { auth: MASTER });
+    const exportPath = join(server.dataDir, "export.sqlite");
+    await Bun.write(exportPath, await res.arrayBuffer());
+    const exported = new Database(exportPath, { readonly: true });
+    expect(exported.query("SELECT model, audio_ms FROM usage").all()).toEqual([{ model: "fake", audio_ms: 600 }]);
+    exported.close();
+  });
+
+  test("usage adds up across sessions instead of being replaced", async () => {
+    const room = await server.createRoom();
+    (await sendScript(room.id, room.password, [1000, 0])).close();
+    await server.settle();
+    // As when the same audio is fed again after a vendor error.
+    server.app.rooms.addUsage(STREAM, "fake", { audioMs: 200, sessions: 1, costUsd: 0.0002 });
+    const [admin] = await server.json("/api/admin/rooms", { auth: MASTER });
+    expect(admin.usage.byStream[0]).toMatchObject({ audioMs: 400, sessions: 2 });
   });
 
   test("deleting a room while it is being transcribed stops cleanly", async () => {

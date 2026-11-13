@@ -12,6 +12,15 @@ interface AdminStream {
   durationMs: number;
   transcribedMs: number;
   ended: boolean;
+  costUsd: number;
+}
+
+interface AdminUsage {
+  streamId: string;
+  model: string;
+  audioMs: number;
+  sessions: number;
+  costUsd: number;
 }
 
 interface AdminRoom {
@@ -20,6 +29,7 @@ interface AdminRoom {
   password: string;
   createdAt: number;
   streams: AdminStream[];
+  usage: { audioMs: number; costUsd: number; byStream: AdminUsage[] };
 }
 
 function readMaster() {
@@ -42,6 +52,10 @@ function duration(ms: number) {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return `${h ? `${h}h ` : ""}${m}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+function usd(amount: number) {
+  return `$${amount.toFixed(amount > 0 && amount < 1 ? 4 : 2)}`;
 }
 
 function App() {
@@ -203,8 +217,13 @@ function RoomCard({
         <div>
           <h2 style={{ margin: 0 }}>{room.name}</h2>
           <span className="muted">
-            {room.streams.length} stream{room.streams.length === 1 ? "" : "s"} · {duration(totalMs)} recorded · created{" "}
-            {new Date(room.createdAt).toLocaleString()}
+            {room.streams.length} stream{room.streams.length === 1 ? "" : "s"} · {duration(totalMs)} recorded ·{" "}
+            <span
+              title={`${duration(room.usage.audioMs)} of audio sent to ${[...new Set(room.usage.byStream.map((u) => u.model))].join(", ") || "the transcription model"}`}
+            >
+              {usd(room.usage.costUsd)} transcription
+            </span>{" "}
+            · created {new Date(room.createdAt).toLocaleString()}
           </span>
         </div>
         <a href={viewerUrl} target="_blank" rel="noreferrer">
@@ -228,6 +247,7 @@ function RoomCard({
               <th>Started</th>
               <th>Recorded</th>
               <th>Transcribed</th>
+              <th>Cost</th>
               <th>Format</th>
               <th />
             </tr>
@@ -242,6 +262,7 @@ function RoomCard({
                 <td>{s.startedAt ? new Date(s.startedAt).toLocaleTimeString() : "—"}</td>
                 <td>{duration(s.durationMs)}</td>
                 <td>{duration(s.transcribedMs)}</td>
+                <td>{usd(s.costUsd)}</td>
                 <td>{s.format}</td>
                 <td>
                   <a href={`/api/rooms/${room.id}/streams/${s.id}/audio.wav`} download>

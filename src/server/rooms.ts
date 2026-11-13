@@ -13,6 +13,14 @@ import {
   type TranscriptState,
 } from "../shared/transcript.ts";
 
+export interface UsageRecord {
+  streamId: string;
+  model: string;
+  audioMs: number;
+  sessions: number;
+  costUsd: number;
+}
+
 export interface Room {
   id: string;
   name: string;
@@ -34,8 +42,7 @@ export interface StreamRecord {
 
 /** Live payloads pushed to viewers. `event` is logged; `partial` is not. */
 export type LiveMessage =
-  | { kind: "event"; event: RoomEvent }
-  | { kind: "partial"; seq: number; partial: LivePartial; cleared: boolean };
+  { kind: "event"; event: RoomEvent } | { kind: "partial"; seq: number; partial: LivePartial; cleared: boolean };
 
 interface PublishQueue {
   pending: LiveMessage[];
@@ -173,9 +180,16 @@ export class RoomService {
         this.db.query("INSERT INTO export.rooms SELECT * FROM main.rooms WHERE id = ?").run(roomId);
         this.db.query("INSERT INTO export.streams SELECT * FROM main.streams WHERE room_id = ?").run(roomId);
         this.db
-          .query("INSERT INTO export.chunks SELECT * FROM main.chunks WHERE stream_id IN (SELECT id FROM main.streams WHERE room_id = ?)")
+          .query(
+            "INSERT INTO export.chunks SELECT * FROM main.chunks WHERE stream_id IN (SELECT id FROM main.streams WHERE room_id = ?)",
+          )
           .run(roomId);
         this.db.query("INSERT INTO export.events SELECT * FROM main.events WHERE room_id = ?").run(roomId);
+        this.db
+          .query(
+            "INSERT INTO export.usage SELECT * FROM main.usage WHERE stream_id IN (SELECT id FROM main.streams WHERE room_id = ?)",
+          )
+          .run(roomId);
       })();
     } finally {
       this.db.exec("DETACH DATABASE export");
@@ -218,7 +232,8 @@ export class RoomService {
       const fresh = chunks.filter((c) => c.seq >= current.chunkCount);
       if (fresh.length === 0) return current.chunkCount;
       fresh.forEach((c, i) => {
-        if (c.seq !== current.chunkCount + i) throw new Error(`Gap: expected chunk ${current.chunkCount + i}, got ${c.seq}`);
+        if (c.seq !== current.chunkCount + i)
+          throw new Error(`Gap: expected chunk ${current.chunkCount + i}, got ${c.seq}`);
       });
       this.audio.insert(stream.id, fresh);
       const chunkCount = current.chunkCount + fresh.length;
@@ -246,10 +261,32 @@ export class RoomService {
     this.appendEvent(stream.roomId, { type: "stream.ended", streamId });
   }
 
-  setTranscribedUntil(streamId: string, seq: number) {
+  /** Records audio fed to a transcription model (and sessions opened) for billing. */
+  addUsage(streamId: string, model: string, usage: { audioMs: number; sessions: number; costUsd: number }) {
     this.db
-      .query("UPDATE streams SET transcribed_until = max(transcribed_until, ?) WHERE id = ?")
-      .run(seq, streamId);
+      .query(
+        `INSERT INTO usage (stream_id, model, audio_ms, sessions, cost_usd)
+         SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM streams WHERE id = ?1)
+         ON CONFLICT (stream_id, model) DO UPDATE SET
+           audio_ms = audio_ms + excluded.audio_ms,
+           sessions = sessions + excluded.sessions,
+           cost_usd = cost_usd + excluded.cost_usd`,
+      )
+      .run(streamId, model, usage.audioMs, usage.sessions, usage.costUsd);
+  }
+
+  /** Transcription usage of each stream in the room. */
+  listUsage(roomId: string): UsageRecord[] {
+    return this.db
+      .query<UsageRecord, [string]>(
+        `SELECT u.stream_id AS streamId, u.model, u.audio_ms AS audioMs, u.sessions, u.cost_usd AS costUsd
+         FROM usage u JOIN streams s ON s.id = u.stream_id WHERE s.room_id = ? ORDER BY s.created_at, u.model`,
+      )
+      .all(roomId);
+  }
+
+  setTranscribedUntil(streamId: string, seq: number) {
+    this.db.query("UPDATE streams SET transcribed_until = max(transcribed_until, ?) WHERE id = ?").run(seq, streamId);
   }
 
   // Event log
