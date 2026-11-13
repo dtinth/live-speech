@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import type { Server } from "bun";
-import { createQwenProvider } from "../src/server/transcription/qwen.ts";
+import { createQwenProvider, normalizeThai } from "../src/server/transcription/qwen.ts";
 
 /** A stand-in for DashScope's duplex inference endpoint, scripted per test. */
 function fakeDashScope(script: (ws: { send(data: object): void; close(): void }, message: any) => void) {
@@ -108,4 +108,9 @@ test("task-failed closes the session with the vendor's error", async () => {
   const closed = Promise.withResolvers<Error | undefined>();
   provider(url).createSession({ onPartial() {}, onSegment() {}, onClose: closed.resolve });
   expect((await closed.promise)?.message).toBe("InvalidApiKey: bad key");
+});
+
+test("decomposed Thai SARA AM is composed", () => {
+  expect(normalizeThai("นําไปสู่ ท้ําหมด ทํ้า")).toBe("นำไปสู่ ท้ำหมด ท้ำ");
+  expect(normalizeThai("ดำรง")).toBe("ดำรง");
 });

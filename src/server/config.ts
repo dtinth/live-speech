@@ -74,6 +74,6 @@ export function loadConfig(rawEnv: Record<string, string | undefined> = process.
       outputPerMillionUsd: price("QWEN_OUTPUT_PRICE_PER_MILLION_USD", 0.7),
     },
     sockudo,
-    catchUpSpeed: Number(env.CATCHUP_SPEED ?? 1.5),
+    catchUpSpeed: Number(env.CATCHUP_SPEED ?? 3),
   };
 }

@@ -16,6 +16,15 @@ export interface QwenConfig {
 }
 
 /**
+ * The model writes Thai SARA AM decomposed, as NIKHAHIT + SARA AA (sometimes
+ * with a tone mark between): "นําไปสู่" for "นำไปสู่". It looks the same but
+ * breaks search and copy-paste, so compose it.
+ */
+export function normalizeThai(text: string) {
+  return text.replace(/\u0E4D([\u0E48-\u0E4B]?)\u0E32/g, "$1\u0E33");
+}
+
+/**
  * Qwen-Audio-ASR-Streaming (qwen-audio-3.1-asr-flash-streaming) over
  * DashScope's duplex `run-task` protocol. The vendor's VAD splits speech into
  * sentences; each result carries `begin_time` / `end_time` in ms from the
@@ -106,10 +115,11 @@ export function createQwenProvider(config: QwenConfig): TranscriptionProvider {
             const sentence = data.payload?.output?.sentence;
             if (!sentence || sentence.heartbeat) break;
             const startMs = Number(sentence.begin_time ?? 0);
+            const text = normalizeThai(String(sentence.text ?? ""));
             if (sentence.sentence_end) {
-              callbacks.onSegment(startMs, Number(sentence.end_time ?? startMs), String(sentence.text ?? ""));
+              callbacks.onSegment(startMs, Number(sentence.end_time ?? startMs), text);
             } else {
-              callbacks.onPartial(startMs, String(sentence.text ?? ""));
+              callbacks.onPartial(startMs, text);
             }
             break;
           }

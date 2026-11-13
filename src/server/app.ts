@@ -56,13 +56,13 @@ export function startApp(options: AppOptions): App {
   const audio = new AudioStore(db);
   const rooms = new RoomService(db, audio, options.publisher);
   const transcriber = new Transcriber(rooms, audio, options.provider, {
-    catchUpSpeed: 1.5,
+    catchUpSpeed: 3,
     idleMs: 5000,
     retryMs: 2000,
     ...options.transcriber,
   });
   const retranscriber = new Retranscriber(rooms, audio, options.provider, {
-    catchUpSpeed: options.transcriber?.catchUpSpeed ?? 1.5,
+    catchUpSpeed: options.transcriber?.catchUpSpeed ?? 3,
   });
   const ingest = createIngestHandler(rooms, transcriber, { pingIntervalMs: options.pingIntervalMs ?? 2000 });
 
