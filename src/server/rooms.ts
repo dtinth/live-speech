@@ -1,4 +1,5 @@
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
+import { SCHEMA } from "./db.ts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { AudioStore } from "./audioStore.ts";
 import { roomChannel, type Publisher } from "./publisher.ts";
@@ -35,6 +36,11 @@ export interface StreamRecord {
 export type LiveMessage =
   | { kind: "event"; event: RoomEvent }
   | { kind: "partial"; seq: number; partial: LivePartial; cleared: boolean };
+
+interface PublishQueue {
+  pending: LiveMessage[];
+  running: Promise<void> | null;
+}
 
 export function randomId(bytes = 6) {
   return randomBytes(bytes).toString("base64url");
@@ -80,7 +86,7 @@ export class RoomService {
   private transcripts = new Map<string, TranscriptState>();
   private partials = new Map<string, Map<string, LivePartial>>();
   private listeners = new Set<(roomId: string, message: LiveMessage) => void>();
-  private publishQueues = new Map<string, Promise<void>>();
+  private publishQueues = new Map<string, PublishQueue>();
 
   constructor(
     private readonly db: Database,
@@ -150,6 +156,30 @@ export class RoomService {
       }
     };
     setTimeout(step, 0);
+  }
+
+  /**
+   * Writes one room (metadata, streams, audio chunks, event log) to a new
+   * SQLite file with the same schema, so nothing is lost when the room is
+   * deleted afterwards and the export can be opened with any SQLite tool.
+   */
+  exportRoom(roomId: string, path: string) {
+    const out = new Database(path, { create: true });
+    out.exec(SCHEMA);
+    out.close();
+    this.db.query("ATTACH DATABASE ? AS export").run(path);
+    try {
+      this.db.transaction(() => {
+        this.db.query("INSERT INTO export.rooms SELECT * FROM main.rooms WHERE id = ?").run(roomId);
+        this.db.query("INSERT INTO export.streams SELECT * FROM main.streams WHERE room_id = ?").run(roomId);
+        this.db
+          .query("INSERT INTO export.chunks SELECT * FROM main.chunks WHERE stream_id IN (SELECT id FROM main.streams WHERE room_id = ?)")
+          .run(roomId);
+        this.db.query("INSERT INTO export.events SELECT * FROM main.events WHERE room_id = ?").run(roomId);
+      })();
+    } finally {
+      this.db.exec("DETACH DATABASE export");
+    }
   }
 
   // Streams
@@ -272,8 +302,14 @@ export class RoomService {
     if (!this.getRoom(roomId)) return;
     let map = this.partials.get(roomId);
     if (!map) this.partials.set(roomId, (map = new Map()));
-    if (cleared) map.delete(partial.streamId);
-    else map.set(partial.streamId, partial);
+    if (cleared) {
+      // Only clear the utterance that finished; the next may already be streaming.
+      const current = map.get(partial.streamId);
+      if (current && current.startMs > partial.startMs) return;
+      map.delete(partial.streamId);
+    } else {
+      map.set(partial.streamId, partial);
+    }
     this.broadcast(roomId, { kind: "partial", seq: this.getTranscript(roomId).seq, partial, cleared });
   }
 
@@ -287,17 +323,35 @@ export class RoomService {
 
   private broadcast(roomId: string, message: LiveMessage) {
     for (const listener of this.listeners) listener(roomId, message);
-    // Publish one at a time per room, so viewers receive events in seq order.
-    const previous = this.publishQueues.get(roomId) ?? Promise.resolve();
-    const next = previous.then(() => this.publisher.publish(roomChannel(roomId), message.kind, message));
-    this.publishQueues.set(roomId, next);
-    void next.finally(() => {
-      if (this.publishQueues.get(roomId) === next) this.publishQueues.delete(roomId);
-    });
+    let queue = this.publishQueues.get(roomId);
+    if (!queue) this.publishQueues.set(roomId, (queue = { pending: [], running: null }));
+    // A newer partial for the same stream makes an unsent one pointless; when
+    // Sockudo is slow this keeps the queue to roughly one entry per stream.
+    if (message.kind === "partial") {
+      const stale = queue.pending.findIndex(
+        (m) => m.kind === "partial" && m.partial.streamId === message.partial.streamId,
+      );
+      if (stale !== -1) queue.pending.splice(stale, 1);
+    }
+    queue.pending.push(message);
+    queue.running ??= this.drain(roomId, queue);
   }
 
-  /** Resolves once everything broadcast so far has been handed to the publisher. */
-  async flushPublishes() {
-    await Promise.all(this.publishQueues.values());
+  /** Publishes one at a time per room, so viewers receive events in seq order. */
+  private async drain(roomId: string, queue: PublishQueue) {
+    for (let message = queue.pending.shift(); message; message = queue.pending.shift()) {
+      await this.publisher.publish(roomChannel(roomId), message.kind, message);
+    }
+    queue.running = null;
+    if (this.publishQueues.get(roomId) === queue) this.publishQueues.delete(roomId);
+  }
+
+  /**
+   * Resolves once everything broadcast so far has been published, or after
+   * `timeoutMs` (viewers catch up over HTTP anyway, so shutdown needn't wait).
+   */
+  async flushPublishes(timeoutMs = 3000) {
+    const running = [...this.publishQueues.values()].map((q) => q.running);
+    await Promise.race([Promise.all(running), Bun.sleep(timeoutMs)]);
   }
 }

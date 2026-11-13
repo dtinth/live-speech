@@ -209,8 +209,14 @@ describe("robustness", () => {
   test("deleting a room removes it and its audio", async () => {
     const room = await server.createRoom();
     (await sendScript(room.id, room.password, [1000, 0])).close();
-    const exported = await server.json(`/api/admin/rooms/${room.id}/export`, { auth: MASTER });
-    expect(exported.events.length).toBeGreaterThan(0);
+    const res = await server.fetch(`/api/admin/rooms/${room.id}/export`, { auth: MASTER });
+    const exportPath = join(server.dataDir, "export.sqlite");
+    await Bun.write(exportPath, await res.arrayBuffer());
+    const exported = new Database(exportPath, { readonly: true });
+    expect(exported.query("SELECT count(*) AS n FROM chunks").get()).toEqual({ n: 2 });
+    expect((exported.query("SELECT count(*) AS n FROM events").get() as { n: number }).n).toBeGreaterThan(0);
+    expect(exported.query("SELECT name FROM rooms").all()).toEqual([{ name: "Test room" }]);
+    exported.close();
     await server.json(`/api/admin/rooms/${room.id}`, { method: "DELETE", auth: MASTER });
     expect((await server.fetch(`/api/rooms/${room.id}`)).status).toBe(404);
     expect((await server.fetch(`/api/rooms/${room.id}/streams/${STREAM}/audio.wav`)).status).toBe(404);
@@ -227,5 +233,60 @@ describe("robustness", () => {
     sender.close();
     await server.settle();
     expect((await server.json("/api/admin/rooms", { auth: MASTER })).length).toBe(0);
+  });
+});
+
+describe("hostile input", () => {
+  test("malformed sender messages are rejected without taking the server down", async () => {
+    const room = await server.createRoom();
+    const attempts: ((s: Awaited<ReturnType<typeof server.connectSender>>) => void)[] = [
+      (s) => s.ws.send("null"),
+      (s) => s.ws.send("42"),
+      (s) => s.ws.send(JSON.stringify({ type: "hello", streamId: STREAM, format: "pcm16" })),
+      (s) => s.ws.send(JSON.stringify({ type: "hello", password: room.password, streamId: 7, format: "pcm16" })),
+      (s) => s.ws.send(new Uint8Array([1])),
+    ];
+    for (const attempt of attempts) {
+      const sender = await server.connectSender(room.id);
+      attempt(sender);
+      await sender.waitFor("error").catch(() => {});
+    }
+    // A short binary frame after a valid hello.
+    const sender = await server.connectSender(room.id);
+    await sender.hello(room.password, STREAM);
+    sender.ws.send(new Uint8Array([1, 2]));
+    await sender.waitFor("error");
+    expect((await server.fetch("/api/health")).status).toBe(200);
+  });
+
+  test("a second hello on the same connection is refused", async () => {
+    const room = await server.createRoom();
+    const sender = await server.connectSender(room.id);
+    await sender.hello(room.password, STREAM);
+    sender.send({ type: "hello", password: room.password, streamId: "stream-bbbbbbbb", format: "pcm16" });
+    expect((await sender.waitFor("error")).message).toContain("hello");
+  });
+
+  test("regenerating the room password cuts off connected senders", async () => {
+    const room = await server.createRoom();
+    const sender = await server.connectSender(room.id);
+    await sender.hello(room.password, STREAM);
+    await server.json(`/api/admin/rooms/${room.id}/password`, { method: "POST", auth: MASTER });
+    expect((await sender.waitFor("error")).message).toContain("password");
+  });
+
+  test("segment ids that name built-in properties are not segments", async () => {
+    const room = await server.createRoom();
+    for (const id of ["__proto__", "hasOwnProperty", "constructor"]) {
+      expect((await server.fetch(`/api/rooms/${room.id}/segments/${id}`)).status).toBe(404);
+      const res = await server.fetch(`/api/rooms/${room.id}/segments/${id}`, {
+        method: "PATCH",
+        auth: room.password,
+        body: JSON.stringify({ text: "junk" }),
+      });
+      expect(res.status).toBe(404);
+    }
+    const events = await server.json(`/api/rooms/${room.id}/events?after=0`);
+    expect(events.events).toHaveLength(0);
   });
 });

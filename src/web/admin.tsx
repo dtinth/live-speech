@@ -182,7 +182,7 @@ function RoomCard({
     const data = await (await api(`/api/admin/rooms/${room.id}/export`)).blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(data);
-    a.download = `live-speech-${room.id}.json`;
+    a.download = `live-speech-${room.id}.sqlite`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -245,7 +245,7 @@ function RoomCard({
       )}
 
       <div className="row" style={{ marginTop: 12 }}>
-        <button onClick={exportRoom}>Export transcript + history</button>
+        <button onClick={exportRoom}>Export room (audio + transcript)</button>
         <button
           onClick={async () => {
             if (!confirm(`Give “${room.name}” a new password? Senders using the old one will be cut off.`)) return;

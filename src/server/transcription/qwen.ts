@@ -62,7 +62,13 @@ export function createQwenProvider(config: QwenConfig): TranscriptionProvider {
       });
       ws.addEventListener("message", (e) => {
         if (closed) return;
-        const data = JSON.parse(String(e.data));
+        let data;
+        try {
+          data = JSON.parse(String(e.data));
+        } catch {
+          console.error("[qwen] non-JSON message:", String(e.data).slice(0, 200));
+          return;
+        }
         switch (data.type) {
           case "input_audio_buffer.speech_started":
             items.set(data.item_id, { startMs: data.audio_start_ms ?? lastEndMs, endMs: null, text: "" });
@@ -86,9 +92,14 @@ export function createQwenProvider(config: QwenConfig): TranscriptionProvider {
             callbacks.onSegment(item.startMs, item.endMs ?? lastEndMs, data.transcript ?? "");
             break;
           }
-          case "conversation.item.input_audio_transcription.failed":
+          case "conversation.item.input_audio_transcription.failed": {
             console.error("[qwen] transcription failed:", JSON.stringify(data));
+            // Close out the item (empty text logs nothing) so its partial is cleared.
+            const item = items.get(data.item_id);
+            items.delete(data.item_id);
+            if (item) callbacks.onSegment(item.startMs, item.endMs ?? lastEndMs, "");
             break;
+          }
           case "session.finished":
             end();
             break;

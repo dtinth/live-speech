@@ -63,64 +63,100 @@ export function createIngestHandler(rooms: RoomService, transcriber: Transcriber
     }
   };
 
+  const sockets = new Set<ServerWebSocket<IngestSocketData>>();
+
+  const handleText = (ws: ServerWebSocket<IngestSocketData>, raw: string) => {
+    let message: ClientMessage;
+    try {
+      message = JSON.parse(raw);
+    } catch {
+      return fail(ws, "Bad JSON");
+    }
+    if (!message || typeof message !== "object") return fail(ws, "Bad message");
+    switch (message.type) {
+      case "hello": {
+        if (ws.data.stream) return fail(ws, "Already said hello; use one connection per stream");
+        if (typeof message.password !== "string" || !rooms.checkPassword(ws.data.roomId, message.password)) {
+          return fail(ws, "Wrong room password");
+        }
+        if (typeof message.streamId !== "string" || !/^[\w-]{8,64}$/.test(message.streamId)) {
+          return fail(ws, "Bad stream id");
+        }
+        if (message.format !== "pcm16" && message.format !== "opus") return fail(ws, "Bad format");
+        try {
+          ws.data.stream = rooms.openStream(ws.data.roomId, message.streamId, message.format);
+        } catch (error) {
+          return fail(ws, (error as Error).message);
+        }
+        send(ws, { type: "ready", next: ws.data.stream.chunkCount });
+        ping(ws);
+        ws.data.pingTimer = setInterval(() => ping(ws), options.pingIntervalMs);
+        break;
+      }
+      case "pong": {
+        if (typeof message.id !== "number" || typeof message.elapsed !== "number" || !Number.isFinite(message.elapsed)) {
+          return;
+        }
+        const sent = ws.data.pings.get(message.id);
+        if (!sent || !ws.data.stream) return;
+        ws.data.pings.delete(message.id);
+        const rtt = performance.now() - sent.perf;
+        // The client read its clock roughly halfway through the round trip.
+        const startedAt = Math.round(sent.epoch + rtt / 2 - message.elapsed);
+        rooms.updateClock(ws.data.stream.id, startedAt, Math.round(rtt));
+        break;
+      }
+      case "end": {
+        if (!ws.data.stream) return;
+        flush(ws);
+        rooms.endStream(ws.data.stream.id);
+        transcriber.notify(ws.data.stream.id);
+        break;
+      }
+    }
+  };
+
+  const handleBinary = (ws: ServerWebSocket<IngestSocketData>, raw: Buffer) => {
+    if (!ws.data.stream) return fail(ws, "Send hello first");
+    if (raw.byteLength < 4) return fail(ws, "Chunk frame too short");
+    ws.data.pending.push(decodeChunkFrame(new Uint8Array(raw)));
+    // Batch the frames that arrive together into one disk write and one ack.
+    if (!ws.data.flushScheduled) {
+      ws.data.flushScheduled = true;
+      setTimeout(() => flush(ws), 0);
+    }
+  };
+
   return {
-    open(_ws: ServerWebSocket<IngestSocketData>) {},
+    open(ws: ServerWebSocket<IngestSocketData>) {
+      sockets.add(ws);
+    },
 
     message(ws: ServerWebSocket<IngestSocketData>, raw: string | Buffer) {
-      if (typeof raw !== "string") {
-        if (!ws.data.stream) return fail(ws, "Send hello first");
-        ws.data.pending.push(decodeChunkFrame(new Uint8Array(raw)));
-        // Batch the frames that arrive together into one disk write and one ack.
-        if (!ws.data.flushScheduled) {
-          ws.data.flushScheduled = true;
-          setTimeout(() => flush(ws), 0);
-        }
-        return;
-      }
-      let message: ClientMessage;
+      // Anyone can open this socket, so nothing a client sends may throw out
+      // of here: an uncaught error would take down every room.
       try {
-        message = JSON.parse(raw);
-      } catch {
-        return fail(ws, "Bad JSON");
-      }
-      switch (message.type) {
-        case "hello": {
-          if (!rooms.checkPassword(ws.data.roomId, message.password)) return fail(ws, "Wrong room password");
-          if (!/^[\w-]{8,64}$/.test(message.streamId)) return fail(ws, "Bad stream id");
-          if (message.format !== "pcm16" && message.format !== "opus") return fail(ws, "Bad format");
-          try {
-            ws.data.stream = rooms.openStream(ws.data.roomId, message.streamId, message.format);
-          } catch (error) {
-            return fail(ws, (error as Error).message);
-          }
-          send(ws, { type: "ready", next: ws.data.stream.chunkCount });
-          ping(ws);
-          ws.data.pingTimer = setInterval(() => ping(ws), options.pingIntervalMs);
-          break;
-        }
-        case "pong": {
-          const sent = ws.data.pings.get(message.id);
-          if (!sent || !ws.data.stream) return;
-          ws.data.pings.delete(message.id);
-          const rtt = performance.now() - sent.perf;
-          // The client read its clock roughly halfway through the round trip.
-          const startedAt = Math.round(sent.epoch + rtt / 2 - message.elapsed);
-          rooms.updateClock(ws.data.stream.id, startedAt, Math.round(rtt));
-          break;
-        }
-        case "end": {
-          if (!ws.data.stream) return;
-          flush(ws);
-          rooms.endStream(ws.data.stream.id);
-          transcriber.notify(ws.data.stream.id);
-          break;
-        }
+        if (typeof raw === "string") handleText(ws, raw);
+        else handleBinary(ws, raw);
+      } catch (error) {
+        console.error("[ingest]", error);
+        fail(ws, "Internal error");
       }
     },
 
     close(ws: ServerWebSocket<IngestSocketData>) {
+      sockets.delete(ws);
       if (ws.data.pingTimer) clearInterval(ws.data.pingTimer);
-      flush(ws);
+      try {
+        flush(ws);
+      } catch (error) {
+        console.error("[ingest]", error);
+      }
+    },
+
+    /** Cuts off a room's senders, e.g. after its password changes. */
+    disconnectRoom(roomId: string, reason: string) {
+      for (const ws of sockets) if (ws.data.roomId === roomId) fail(ws, reason);
     },
   };
 }

@@ -1,5 +1,5 @@
 import type { BunRequest, HTMLBundle, Server } from "bun";
-import { CHUNK_MS } from "../shared/protocol.ts";
+import { CHUNK_MS, PCM_CHUNK_BYTES } from "../shared/protocol.ts";
 import { orderedSegments } from "../shared/transcript.ts";
 import { AudioStore } from "./audioStore.ts";
 import type { SockudoClientConfig } from "./config.ts";
@@ -11,6 +11,9 @@ import { RoomService, safeEqual, type Room } from "./rooms.ts";
 import { Transcriber, type TranscriberOptions } from "./transcriber.ts";
 import type { TranscriptionProvider } from "./transcription/provider.ts";
 import { wavHeader } from "./wav.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export interface AppOptions {
   port: number;
@@ -34,6 +37,9 @@ export interface App {
   transcriber: Transcriber;
   stop(): Promise<void>;
 }
+
+/** Keeps any one event well under Sockudo's per-event payload limit. */
+const MAX_SEGMENT_TEXT = 10_000;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const error = (status: number, message: string) => json({ error: message }, status);
@@ -122,8 +128,9 @@ export function startApp(options: AppOptions): App {
         POST: async (req) => {
           if (!isAdmin(req)) return error(401, "Wrong master password");
           const body = (await req.json().catch(() => ({}))) as { name?: string };
-          const name = body.name?.trim();
+          const name = typeof body.name === "string" ? body.name.trim() : "";
           if (!name) return error(400, "Room name is required");
+          if (name.length > 200) return error(400, "Room name is too long");
           return json(adminRoom(rooms.createRoom(name)), 201);
         },
       },
@@ -133,6 +140,7 @@ export function startApp(options: AppOptions): App {
           if (!isAdmin(req)) return error(401, "Wrong master password");
           if (!rooms.getRoom(req.params.roomId)) return error(404, "No such room");
           transcriber.forget(rooms.listStreams(req.params.roomId).map((s) => s.id));
+          ingest.disconnectRoom(req.params.roomId, "Room deleted");
           rooms.deleteRoom(req.params.roomId);
           return json({ deleted: true });
         },
@@ -142,7 +150,9 @@ export function startApp(options: AppOptions): App {
         POST: (req) => {
           if (!isAdmin(req)) return error(401, "Wrong master password");
           const room = rooms.regeneratePassword(req.params.roomId);
-          return room ? json(adminRoom(room)) : error(404, "No such room");
+          if (!room) return error(404, "No such room");
+          ingest.disconnectRoom(room.id, "Room password changed");
+          return json(adminRoom(room));
         },
       },
 
@@ -151,10 +161,25 @@ export function startApp(options: AppOptions): App {
           if (!isAdmin(req)) return error(401, "Wrong master password");
           const room = rooms.getRoom(req.params.roomId);
           if (!room) return error(404, "No such room");
-          return json({
-            room,
-            streams: rooms.listStreams(room.id),
-            events: rooms.eventsSince(room.id, 0, Number.MAX_SAFE_INTEGER),
+          const dir = mkdtempSync(join(tmpdir(), "live-speech-export-"));
+          const path = join(dir, `${room.id}.sqlite`);
+          try {
+            rooms.exportRoom(room.id, path);
+          } catch (e) {
+            rmSync(dir, { recursive: true, force: true });
+            throw e;
+          }
+          const file = Bun.file(path);
+          // Read it into memory so the temp file can go right away; an Opus
+          // room is ~15 MB per recorded hour.
+          return file.arrayBuffer().then((bytes) => {
+            rmSync(dir, { recursive: true, force: true });
+            return new Response(bytes, {
+              headers: {
+                "content-type": "application/vnd.sqlite3",
+                "content-disposition": `attachment; filename="live-speech-${room.id}.sqlite"`,
+              },
+            });
           });
         },
       },
@@ -194,20 +219,54 @@ export function startApp(options: AppOptions): App {
         const stream = rooms.getStream(req.params.streamId);
         if (!stream || stream.roomId !== room.id) return error(404, "No such stream");
         const search = new URL(req.url).searchParams;
-        const fromSeq = Math.max(0, Math.floor(Number(search.get("from") ?? 0) / CHUNK_MS));
-        const toSeq = Math.min(stream.chunkCount, Math.ceil(Number(search.get("to") ?? Infinity) / CHUNK_MS));
-        // Opus needs decoding from the start of the stream to stay in sync, but
-        // each 100 ms chunk is independent enough that starting mid-stream only
-        // costs a few ms of warm-up, which is fine for listening back.
+        const fromSeq = Math.max(0, Math.floor(Number(search.get("from") ?? 0) / CHUNK_MS) || 0);
+        const toSeq = Math.min(stream.chunkCount, Math.ceil(Number(search.get("to") ?? Infinity) / CHUNK_MS) || 0);
+        const chunks = Math.max(0, toSeq - fromSeq);
+        // Decode a page at a time as the client reads, so a day-long stream
+        // neither sits in memory nor blocks the event loop. Opus decoding
+        // starting mid-stream costs a few ms of warm-up, fine for listening.
         const decoder = createChunkDecoder(stream.format);
-        const parts: Uint8Array[] = [];
-        for (const chunk of audio.read(stream.id, { fromSeq, toSeq })) {
-          parts.push(decoder.decode(chunk.payload));
-        }
-        decoder.dispose();
-        const bytes = parts.reduce((n, p) => n + p.byteLength, 0);
-        return new Response(new Blob([wavHeader(bytes) as BlobPart, ...(parts as BlobPart[])]), {
-          headers: { "content-type": "audio/wav" },
+        let next = fromSeq;
+        let headerSent = false;
+        const body = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            // Let acks and other requests run between pages.
+            await new Promise((resolve) => setImmediate(resolve));
+            if (!headerSent) {
+              headerSent = true;
+              controller.enqueue(wavHeader(chunks * PCM_CHUNK_BYTES));
+              return;
+            }
+            const page: Uint8Array[] = [];
+            for (const chunk of audio.read(stream.id, { fromSeq: next, toSeq: Math.min(toSeq, next + 100) })) {
+              // Fill any hole with silence so the WAV keeps the stream's timing.
+              while (next < chunk.seq) {
+                page.push(new Uint8Array(PCM_CHUNK_BYTES));
+                next++;
+              }
+              page.push(decoder.decode(chunk.payload));
+              next = chunk.seq + 1;
+            }
+            const pageEnd = Math.min(toSeq, next + (page.length ? 0 : 100));
+            while (next < pageEnd) {
+              page.push(new Uint8Array(PCM_CHUNK_BYTES));
+              next++;
+            }
+            if (page.length) controller.enqueue(Buffer.concat(page));
+            if (next >= toSeq) {
+              decoder.dispose();
+              controller.close();
+            }
+          },
+          cancel() {
+            decoder.dispose();
+          },
+        });
+        return new Response(body, {
+          headers: {
+            "content-type": "audio/wav",
+            "content-length": String(44 + chunks * PCM_CHUNK_BYTES),
+          },
         });
       }),
 
@@ -219,11 +278,13 @@ export function startApp(options: AppOptions): App {
 
       "/api/rooms/:roomId/segments/:segmentId": {
         GET: withRoom((req, room) => {
-          const segment = rooms.getTranscript(room.id).segments[req.params.segmentId];
+          const segments = rooms.getTranscript(room.id).segments;
+          const segment = Object.hasOwn(segments, req.params.segmentId) ? segments[req.params.segmentId] : undefined;
           return segment ? json(segment) : error(404, "No such segment");
         }),
         PATCH: withRoomPassword(async (req, room) => {
-          const segment = rooms.getTranscript(room.id).segments[req.params.segmentId];
+          const segments = rooms.getTranscript(room.id).segments;
+          const segment = Object.hasOwn(segments, req.params.segmentId) ? segments[req.params.segmentId] : undefined;
           if (!segment) return error(404, "No such segment");
           const body = (await req.json().catch(() => ({}))) as { text?: unknown; author?: unknown; revertTo?: unknown };
           let text: string;
@@ -232,6 +293,7 @@ export function startApp(options: AppOptions): App {
             if (!version) return error(400, "No such version");
             text = version.text;
           } else if (typeof body.text === "string") {
+            if (body.text.length > MAX_SEGMENT_TEXT) return error(413, `Text is limited to ${MAX_SEGMENT_TEXT} characters`);
             text = body.text;
           } else {
             return error(400, "Send { text } or { revertTo: <version seq> }");

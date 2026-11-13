@@ -4,6 +4,9 @@ import { createChunkDecoder, type ChunkDecoder } from "./decoder.ts";
 import { randomId, type RoomService } from "./rooms.ts";
 import type { TranscriptionProvider, TranscriptionSession } from "./transcription/provider.ts";
 
+/** At most this much audio (2 s) may be fed in one burst. */
+const MAX_CREDIT_CHUNKS = 20;
+
 export interface TranscriberOptions {
   /**
    * How much faster than realtime stored audio may be fed when catching up.
@@ -82,10 +85,13 @@ class StreamWorker {
   private baseSeq = 0;
   /** Next chunk to feed. */
   private nextSeq = 0;
-  private sessionStartedAt = 0;
-  private fedInSession = 0;
+  /** Pacing credit in chunks (a token bucket), and when it was last topped up. */
+  private credit = 0;
+  private creditAt = 0;
   private lastFedAt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** The pending timer is only waiting out idleness, so new audio may cut it short. */
+  private timerIsIdleWait = false;
   private stopped = false;
   private finishing = false;
   private resolveDone!: () => void;
@@ -101,11 +107,12 @@ class StreamWorker {
   ) {}
 
   wake() {
-    if (this.stopped || this.timer) return;
-    this.timer = setTimeout(() => {
+    if (this.stopped) return;
+    if (this.timer && this.timerIsIdleWait) {
+      clearTimeout(this.timer);
       this.timer = null;
-      this.tick();
-    }, 0);
+    }
+    this.schedule(0);
   }
 
   stop() {
@@ -127,8 +134,9 @@ class StreamWorker {
     this.resolveDone();
   }
 
-  private schedule(ms: number) {
+  private schedule(ms: number, idleWait = false) {
     if (this.stopped || this.timer) return;
+    this.timerIsIdleWait = idleWait;
     this.timer = setTimeout(() => {
       this.timer = null;
       this.tick();
@@ -145,19 +153,22 @@ class StreamWorker {
       this.startSession(stream.transcribedUntil);
     }
 
-    // Feed as much as the pacing budget allows.
+    // Feed as much as the pacing budget allows. Credit accrues at catchUpSpeed
+    // but is capped, so time spent waiting for live audio can't be saved up
+    // and spent later as one big burst.
     const now = performance.now();
-    const budget =
-      this.options.catchUpSpeed === Infinity
-        ? Infinity
-        : Math.floor(((now - this.sessionStartedAt) * this.options.catchUpSpeed) / CHUNK_MS) + 1 - this.fedInSession;
+    const speed = this.options.catchUpSpeed;
+    if (speed !== Infinity) {
+      this.credit = Math.min(MAX_CREDIT_CHUNKS, this.credit + ((now - this.creditAt) * speed) / CHUNK_MS);
+      this.creditAt = now;
+    }
+    const budget = speed === Infinity ? Infinity : Math.floor(this.credit);
     let fed = 0;
     if (budget > 0 && this.nextSeq < stream.chunkCount) {
       const toSeq = budget === Infinity ? stream.chunkCount : Math.min(stream.chunkCount, this.nextSeq + budget);
       for (const chunk of this.audio.read(stream.id, { fromSeq: this.nextSeq, toSeq })) {
         this.session!.sendAudio(this.decoder!.decode(chunk.payload));
         this.nextSeq = chunk.seq + 1;
-        this.fedInSession++;
         fed++;
       }
       if (fed === 0) {
@@ -169,6 +180,7 @@ class StreamWorker {
       }
     }
     if (fed > 0) this.lastFedAt = now;
+    if (speed !== Infinity) this.credit -= fed;
 
     const caughtUp = this.nextSeq >= stream.chunkCount;
     if (caughtUp && (stream.ended || now - this.lastFedAt >= this.options.idleMs)) {
@@ -179,7 +191,7 @@ class StreamWorker {
       this.schedule(this.options.catchUpSpeed === Infinity ? 0 : 20);
     } else {
       // Wait for more audio (notify() wakes us) or for the idle timeout.
-      this.schedule(Math.max(0, this.options.idleMs - (now - this.lastFedAt)));
+      this.schedule(Math.max(0, this.options.idleMs - (now - this.lastFedAt)), true);
     }
   }
 
@@ -187,9 +199,10 @@ class StreamWorker {
     const stream = this.rooms.getStream(this.streamId)!;
     this.baseSeq = fromSeq;
     this.nextSeq = fromSeq;
-    this.sessionStartedAt = performance.now();
-    this.lastFedAt = this.sessionStartedAt;
-    this.fedInSession = 0;
+    this.lastFedAt = performance.now();
+    // Start with one chunk's worth so the first audio goes out at once.
+    this.credit = 1;
+    this.creditAt = this.lastFedAt;
     this.decoder?.dispose();
     this.decoder = createChunkDecoder(stream.format);
     const base = fromSeq * CHUNK_MS;
@@ -219,6 +232,10 @@ class StreamWorker {
         if (this.session !== session) return;
         this.session = null;
         this.finishing = false;
+        // Whatever was still in progress won't be finished by this session.
+        if (this.rooms.getPartials(roomId).some((p) => p.streamId === this.streamId)) {
+          this.rooms.setPartial(roomId, { streamId: this.streamId, startMs: Number.MAX_SAFE_INTEGER, text: "" }, true);
+        }
         if (error) {
           console.error(`[transcriber] stream ${this.streamId}:`, error.message);
           this.schedule(this.options.retryMs);
