@@ -1,0 +1,128 @@
+<svg width="1400" height="860" viewBox="0 0 1400 860" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100%" height="100%" fill="#0f1115"/>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9aa4b2"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#f2b84b"/>
+    </marker>
+  </defs>
+  <style>
+  text { font-family: "Inter", "Helvetica Neue", Arial, sans-serif; }
+    .box { fill: #181c24; stroke: #3a4250; stroke-width: 1.5; rx: 12; }
+    .srv { fill: #121a2a; stroke: #4a7bd0; stroke-width: 2; }
+    .ext { fill: #1d1a12; stroke: #a8862f; stroke-width: 1.5; }
+    .t { fill: #e8ecf2; font-size: 19px; font-weight: 600; }
+    .s { fill: #9aa4b2; font-size: 14px; }
+    .l { fill: #c9d1dc; font-size: 13px; }
+    .h { fill: #6c90d8; font-size: 15px; font-weight: 700; letter-spacing: .08em; }
+    .ln { stroke: #9aa4b2; stroke-width: 1.8; fill: none; marker-end: url(#a); }
+    .lv { stroke: #f2b84b; stroke-width: 1.8; fill: none; marker-end: url(#b); stroke-dasharray: 6 4; }
+  </style>
+
+  <text x="40" y="48" fill="#e8ecf2" font-size="28" font-weight="700">live-speech v2 — architecture</text>
+  <text x="40" y="76" class="s">One Bun process. Audio is stored before it is transcribed; viewers never connect to our server.</text>
+
+  <!-- Sender -->
+  <rect class="box" x="40" y="130" width="300" height="250" rx="12"/>
+  <text x="60" y="162" class="t">Sender page</text>
+  <text x="60" y="186" class="s">audio crew, room password</text>
+  <text x="60" y="222" class="l">mic → AudioWorklet (16 kHz)</text>
+  <text x="60" y="246" class="l">→ 100 ms chunks, seq 0,1,2…</text>
+  <text x="60" y="270" class="l">→ Opus (WebCodecs) or PCM</text>
+  <text x="60" y="294" class="l">→ IndexedDB first, then send</text>
+  <text x="60" y="318" class="l">deletes chunks once acked</text>
+  <text x="60" y="342" class="l">survives reload / crash / outage</text>
+  <text x="60" y="366" class="l">answers clock pings</text>
+
+  <!-- Server -->
+  <rect class="srv" x="440" y="110" width="560" height="560" rx="14"/>
+  <text x="462" y="140" class="h">BUN SERVER (Dokploy, :3000, VOLUME /data)</text>
+
+  <rect class="box" x="465" y="160" width="240" height="120" rx="10"/>
+  <text x="482" y="188" class="t">Ingest</text>
+  <text x="482" y="212" class="l">auth, gap check, dedupe</text>
+  <text x="482" y="234" class="l">ack only after write</text>
+  <text x="482" y="256" class="l">clock sync (min-RTT ping)</text>
+
+  <rect class="box" x="735" y="160" width="240" height="120" rx="10"/>
+  <text x="752" y="188" class="t">Audio store</text>
+  <text x="752" y="212" class="l">chunks table in SQLite</text>
+  <text x="752" y="234" class="l">as received (Opus/PCM)</text>
+  <text x="752" y="256" class="l">→ WAV playback / export</text>
+
+  <rect class="box" x="735" y="320" width="240" height="140" rx="10"/>
+  <text x="752" y="348" class="t">Transcriber</text>
+  <text x="752" y="372" class="l">reads stored audio, paced</text>
+  <text x="752" y="394" class="l">from transcribed_until</text>
+  <text x="752" y="416" class="l">+ re-transcribe jobs (undo)</text>
+  <text x="752" y="438" class="l">meters cost per stream</text>
+
+  <rect class="box" x="465" y="320" width="240" height="140" rx="10"/>
+  <text x="482" y="348" class="t">Room event log</text>
+  <text x="482" y="372" class="l">SQLite, append-only, seq</text>
+  <text x="482" y="394" class="l">stream.* / segment.final</text>
+  <text x="482" y="416" class="l">segment.edited (revert)</text>
+  <text x="482" y="438" class="l">superseded / restored</text>
+
+  <rect class="box" x="465" y="500" width="510" height="145" rx="10"/>
+  <text x="482" y="528" class="t">HTTP API + pages</text>
+  <text x="482" y="552" class="l">admin (master pw): rooms · new pw · export · delete · redo · cost · senders</text>
+  <text x="482" y="576" class="l">public: snapshot · events?after=seq · transcript.txt / .json · audio.wav</text>
+  <text x="482" y="600" class="l">room pw: PATCH segment {text | revertTo}  ← people and AI agents</text>
+  <text x="482" y="624" class="l">pages: / (admin) · /rooms/:id (viewer) · /rooms/:id/send</text>
+
+  <!-- Qwen -->
+  <rect class="ext" x="1090" y="300" width="270" height="180" rx="12"/>
+  <text x="1110" y="332" class="t">Transcription provider</text>
+  <text x="1110" y="356" class="s">one interface, swappable</text>
+  <text x="1110" y="392" class="l">Qwen3-ASR-Flash-Realtime</text>
+  <text x="1110" y="414" class="l">vendor server_vad →</text>
+  <text x="1110" y="436" class="l">segment start/end ms</text>
+  <text x="1110" y="458" class="l">(fake provider for tests/dev)</text>
+
+  <!-- Sockudo -->
+  <rect class="ext" x="1090" y="560" width="270" height="130" rx="12"/>
+  <text x="1110" y="592" class="t">Sockudo</text>
+  <text x="1110" y="616" class="s">Pusher protocol, channel room-:id</text>
+  <text x="1110" y="648" class="l">events (with seq) + partials</text>
+  <text x="1110" y="670" class="l">stays up across our redeploys</text>
+
+  <!-- Viewer -->
+  <rect class="box" x="40" y="560" width="300" height="200" rx="12"/>
+  <text x="60" y="592" class="t">Viewer page</text>
+  <text x="60" y="616" class="s">public, anyone with the link</text>
+  <text x="60" y="652" class="l">1. GET snapshot (has seq)</text>
+  <text x="60" y="676" class="l">2. apply Sockudo events in order</text>
+  <text x="60" y="700" class="l">3. gap / reconnect → refetch</text>
+  <text x="60" y="724" class="l">captions mode · export · agent help</text>
+
+  <!-- Agent -->
+  <rect class="box" x="40" y="420" width="300" height="100" rx="12"/>
+  <text x="60" y="452" class="t">AI agent</text>
+  <text x="60" y="476" class="l">reads transcript.txt / events</text>
+  <text x="60" y="498" class="l">edits with room password</text>
+
+  <!-- arrows -->
+  <path class="ln" d="M340,220 C390,220 410,220 463,220"/>
+  <text x="352" y="208" class="s">WS: chunks</text>
+  <path class="ln" d="M463,250 C410,250 390,250 342,250"/>
+  <text x="358" y="270" class="s">ack · ping</text>
+  <path class="ln" d="M705,220 L733,220"/>
+  <path class="ln" d="M855,280 L855,318"/>
+  <path class="ln" d="M975,380 L1088,380"/>
+  <path class="ln" d="M1088,420 L977,420"/>
+  <path class="ln" d="M735,400 L707,400"/>
+  <path class="ln" d="M585,280 L585,318"/>
+  <text x="595" y="304" class="s">stream.*</text>
+  <path class="lv" d="M705,440 C900,500 1000,560 1088,600"/>
+  <text x="900" y="498" fill="#f2b84b" font-size="13">publish (in seq order)</text>
+  <path class="lv" d="M1088,650 C800,780 500,760 342,700"/>
+  <text x="640" y="770" fill="#f2b84b" font-size="13">live push</text>
+  <path class="ln" d="M342,620 C390,610 420,590 463,580"/>
+  <text x="360" y="572" class="s">HTTP</text>
+  <path class="ln" d="M342,470 C400,500 420,530 463,545"/>
+
+  <text x="40" y="830" class="s">Grey arrows: our server. Amber dashed: via Sockudo. Every client reconnects and resumes on its own, so a redeploy loses nothing.</text>
+</svg>
