@@ -2,43 +2,48 @@ import type { TranscriptionProvider, TranscriptionSession, TranscriptionCallback
 
 export interface QwenConfig {
   apiKey: string;
+  /** e.g. qwen-audio-3.1-asr-flash-streaming */
   model: string;
-  /** Realtime endpoint, without the model query parameter. */
+  /** Duplex inference endpoint, e.g. wss://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/inference */
   url: string;
-  /** Optional language hint such as "th"; omitted means auto-detect. */
-  language?: string;
-  /** USD per hour of audio fed; the vendor bills input audio duration. */
-  pricePerHourUsd: number;
+  /** Sent as X-DashScope-WorkSpace when set. */
+  workspaceId?: string;
+  /** Language hints such as ["th", "en"] (up to 4); empty means auto-detect. */
+  languageHints: string[];
+  /** USD per million tokens, as billed for qwen-audio-3.1-asr-flash-streaming. */
+  inputPerMillionUsd: number;
+  outputPerMillionUsd: number;
 }
 
 /**
- * Qwen3-ASR-Flash-Realtime over DashScope's OpenAI-style realtime protocol,
- * with the vendor's `server_vad` doing segmentation. The VAD events carry
- * `audio_start_ms` / `audio_end_ms`, which become the segment's offsets; the
- * transcript events carry no timestamps of their own.
+ * Qwen-Audio-ASR-Streaming (qwen-audio-3.1-asr-flash-streaming) over
+ * DashScope's duplex `run-task` protocol. The vendor's VAD splits speech into
+ * sentences; each result carries `begin_time` / `end_time` in ms from the
+ * start of the task, which become the segment's offsets.
  *
- * Prior art: the `qwen` adapter in vxasr (github.com/dtinth/vxbeamer), which
- * uses the same protocol with VAD turned off.
+ * Docs: https://www.alibabacloud.com/help/en/model-studio/qwen-audio-asr-streaming-websocket-api
  */
 export function createQwenProvider(config: QwenConfig): TranscriptionProvider {
   return {
     name: config.model,
-    pricePerHourUsd: config.pricePerHourUsd,
+    // The vendor reports token usage as it goes; nothing to estimate.
+    pricePerHourUsd: 0,
+    reportsUsage: true,
     createSession(callbacks: TranscriptionCallbacks): TranscriptionSession {
-      const ws = new WebSocket(`${config.url}?model=${encodeURIComponent(config.model)}`, {
-        headers: { Authorization: `Bearer ${config.apiKey}`, "OpenAI-Beta": "realtime=v1" },
-      } as unknown as string[]);
-      const queue: string[] = [];
-      const items = new Map<string, { startMs: number; endMs: number | null; text: string }>();
-      let open = false;
+      const headers: Record<string, string> = { Authorization: `Bearer ${config.apiKey}` };
+      if (config.workspaceId) headers["X-DashScope-WorkSpace"] = config.workspaceId;
+      const ws = new WebSocket(config.url, { headers } as unknown as string[]);
+      ws.binaryType = "arraybuffer";
+      const taskId = crypto.randomUUID();
+      const queue: Uint8Array<ArrayBuffer>[] = [];
+      let started = false;
+      let finishRequested = false;
       let closed = false;
-      let lastEndMs = 0;
+      const billed = { input: 0, output: 0 };
 
-      const send = (message: object) => {
-        const data = JSON.stringify(message);
-        if (open) ws.send(data);
-        else queue.push(data);
-      };
+      const command = (action: "run-task" | "finish-task", payload: object) =>
+        ws.send(JSON.stringify({ header: { action, task_id: taskId, streaming: "duplex" }, payload }));
+      const sendFinish = () => command("finish-task", { input: {} });
       const end = (error?: Error) => {
         if (closed) return;
         closed = true;
@@ -47,67 +52,73 @@ export function createQwenProvider(config: QwenConfig): TranscriptionProvider {
         } catch {}
         callbacks.onClose(error);
       };
-
-      send({
-        type: "session.update",
-        session: {
-          modalities: ["text"],
-          input_audio_format: "pcm",
-          sample_rate: 16000,
-          input_audio_transcription: config.language ? { language: config.language } : {},
-          turn_detection: { type: "server_vad", threshold: 0.2, silence_duration_ms: 500 },
-        },
-      });
+      /** Usage is cumulative per task; report what is new since last time. */
+      const recordUsage = (usage: { input_tokens?: number; output_tokens?: number } | undefined) => {
+        if (!usage || typeof usage.input_tokens !== "number") return;
+        const input = usage.input_tokens - billed.input;
+        const output = (usage.output_tokens ?? 0) - billed.output;
+        if (input <= 0 && output <= 0) return;
+        billed.input = usage.input_tokens;
+        billed.output = usage.output_tokens ?? 0;
+        callbacks.onUsage?.({
+          inputTokens: input,
+          outputTokens: output,
+          costUsd: (input * config.inputPerMillionUsd + output * config.outputPerMillionUsd) / 1_000_000,
+        });
+      };
 
       ws.addEventListener("open", () => {
-        open = true;
-        for (const data of queue.splice(0)) ws.send(data);
+        const parameters: Record<string, unknown> = {
+          format: "pcm",
+          sample_rate: 16000,
+          // Captions read better in shorter sentences than the 800 ms default gives.
+          max_sentence_silence: 500,
+          // Keep the task alive through pauses between talks.
+          heartbeat: true,
+        };
+        if (config.languageHints.length) parameters.language_hints = config.languageHints;
+        command("run-task", {
+          task_group: "audio",
+          task: "asr",
+          function: "recognition",
+          model: config.model,
+          parameters,
+          input: {},
+        });
       });
       ws.addEventListener("message", (e) => {
-        if (closed) return;
+        if (closed || typeof e.data !== "string") return;
         let data;
         try {
-          data = JSON.parse(String(e.data));
+          data = JSON.parse(e.data);
         } catch {
-          console.error("[qwen] non-JSON message:", String(e.data).slice(0, 200));
+          console.error("[qwen] non-JSON message:", e.data.slice(0, 200));
           return;
         }
-        switch (data.type) {
-          case "input_audio_buffer.speech_started":
-            items.set(data.item_id, { startMs: data.audio_start_ms ?? lastEndMs, endMs: null, text: "" });
+        switch (data.header?.event) {
+          case "task-started":
+            started = true;
+            for (const pcm of queue.splice(0)) ws.send(pcm);
+            if (finishRequested) sendFinish();
             break;
-          case "input_audio_buffer.speech_stopped": {
-            const item = items.get(data.item_id);
-            if (item) item.endMs = data.audio_end_ms ?? null;
-            if (typeof data.audio_end_ms === "number") lastEndMs = data.audio_end_ms;
-            break;
-          }
-          case "conversation.item.input_audio_transcription.text": {
-            let item = items.get(data.item_id);
-            if (!item) items.set(data.item_id, (item = { startMs: lastEndMs, endMs: null, text: "" }));
-            item.text = `${data.text ?? ""}${data.stash ?? ""}`;
-            callbacks.onPartial(item.startMs, item.text);
-            break;
-          }
-          case "conversation.item.input_audio_transcription.completed": {
-            const item = items.get(data.item_id) ?? { startMs: lastEndMs, endMs: null, text: "" };
-            items.delete(data.item_id);
-            callbacks.onSegment(item.startMs, item.endMs ?? lastEndMs, data.transcript ?? "");
+          case "result-generated": {
+            recordUsage(data.payload?.usage);
+            const sentence = data.payload?.output?.sentence;
+            if (!sentence || sentence.heartbeat) break;
+            const startMs = Number(sentence.begin_time ?? 0);
+            if (sentence.sentence_end) {
+              callbacks.onSegment(startMs, Number(sentence.end_time ?? startMs), String(sentence.text ?? ""));
+            } else {
+              callbacks.onPartial(startMs, String(sentence.text ?? ""));
+            }
             break;
           }
-          case "conversation.item.input_audio_transcription.failed": {
-            console.error("[qwen] transcription failed:", JSON.stringify(data));
-            // Close out the item (empty text logs nothing) so its partial is cleared.
-            const item = items.get(data.item_id);
-            items.delete(data.item_id);
-            if (item) callbacks.onSegment(item.startMs, item.endMs ?? lastEndMs, "");
-            break;
-          }
-          case "session.finished":
+          case "task-finished":
+            recordUsage(data.payload?.usage);
             end();
             break;
-          case "error":
-            end(new Error(JSON.stringify(data.error ?? data)));
+          case "task-failed":
+            end(new Error(`${data.header.error_code}: ${data.header.error_message}`));
             break;
         }
       });
@@ -117,12 +128,16 @@ export function createQwenProvider(config: QwenConfig): TranscriptionProvider {
       return {
         sendAudio(pcm) {
           if (closed) return;
-          send({ type: "input_audio_buffer.append", audio: Buffer.from(pcm).toString("base64") });
+          // Copy: the caller may reuse its buffer, and queued audio waits for task-started.
+          const frame = new Uint8Array(pcm);
+          if (started) ws.send(frame);
+          else queue.push(frame);
         },
         finish() {
-          if (closed) return;
-          // In VAD mode, closing without session.finish drops the item in progress.
-          send({ type: "session.finish" });
+          if (closed || finishRequested) return;
+          finishRequested = true;
+          // Results for the sentence in progress still arrive, then task-finished.
+          if (started) sendFinish();
         },
         close() {
           closed = true;

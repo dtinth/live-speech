@@ -239,6 +239,13 @@ class StreamWorker {
         }
         this.rooms.setTranscribedUntil(this.streamId, Math.floor((base + endMs) / CHUNK_MS));
       },
+      onUsage: (usage) => {
+        try {
+          this.rooms.addUsage(this.streamId, this.provider.name, usage);
+        } catch (e) {
+          console.error(`[transcriber] stream ${this.streamId}: recording usage failed:`, (e as Error).message);
+        }
+      },
       onClose: (error) => {
         if (this.session !== session) return;
         this.session = null;
@@ -270,7 +277,7 @@ class StreamWorker {
       this.rooms.addUsage(this.streamId, this.provider.name, {
         audioMs,
         sessions: this.unbilledSessions,
-        costUsd: (audioMs / 3_600_000) * this.provider.pricePerHourUsd,
+        costUsd: this.provider.reportsUsage ? 0 : (audioMs / 3_600_000) * this.provider.pricePerHourUsd,
       });
       this.unbilledMs = 0;
       this.unbilledSessions = 0;

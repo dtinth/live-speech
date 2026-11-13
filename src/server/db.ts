@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS usage (
   audio_ms INTEGER NOT NULL DEFAULT 0,
   sessions INTEGER NOT NULL DEFAULT 0,
   cost_usd REAL NOT NULL DEFAULT 0,
+  -- For token-billed models, as the vendor reported them.
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (stream_id, model)
 );
 `;
@@ -71,5 +74,10 @@ export function openDatabase(dataDir: string): Database {
   db.exec("PRAGMA synchronous = FULL");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
+  // Columns added after a table first shipped.
+  const usageColumns = db.query<{ name: string }, []>("PRAGMA table_info(usage)").all().map((c) => c.name);
+  for (const column of ["input_tokens", "output_tokens"]) {
+    if (!usageColumns.includes(column)) db.exec(`ALTER TABLE usage ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+  }
   return db;
 }

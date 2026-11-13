@@ -136,6 +136,11 @@ export class Retranscriber {
       onSegment(startMs, endMs, text) {
         if (text.trim()) found.push({ startMs: base + startMs, endMs: base + endMs, text: text.trim() });
       },
+      onUsage: (usage) => {
+        try {
+          this.rooms.addUsage(job.streamId, this.provider.name, usage);
+        } catch {}
+      },
       onClose: (error) => closed(error),
     });
     this.cancels.set(job.id, () => {
@@ -192,7 +197,7 @@ export class Retranscriber {
           this.rooms.addUsage(job.streamId, this.provider.name, {
             audioMs: fedMs,
             sessions: 1,
-            costUsd: (fedMs / 3_600_000) * this.provider.pricePerHourUsd,
+            costUsd: this.provider.reportsUsage ? 0 : (fedMs / 3_600_000) * this.provider.pricePerHourUsd,
           });
         } catch {}
       }

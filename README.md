@@ -65,4 +65,4 @@ Run one replica, and keep Swarm's default `stop-first` update order: two servers
 
 ## Cost
 
-Transcription cost is metered from the audio fed to the model. Audio re-fed after a vendor error or by a re-transcription counts again. The price is `QWEN_PRICE_PER_HOUR_USD`. It defaults to $0.324/h, which is $0.00009/s, Model Studio's international list price for `qwen3-asr-flash-realtime`. Free quota is not taken into account.
+Admin shows what transcription has cost each room and stream. For `qwen-audio-3.1-asr-flash-streaming`, which bills per token, the cost is computed from the token usage the vendor reports. The defaults are $0.93 per million input tokens and $0.70 per million output tokens: Model Studio's international list prices. You can override them with `QWEN_INPUT_PRICE_PER_MILLION_USD` and `QWEN_OUTPUT_PRICE_PER_MILLION_USD`. Audio sent again after a vendor error, or by a re-transcription, is billed again. Free quota is not taken into account.

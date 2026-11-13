@@ -1,3 +1,5 @@
+import type { QwenConfig } from "./transcription/qwen.ts";
+
 export interface SockudoClientConfig {
   key: string;
   wsHost: string;
@@ -10,7 +12,7 @@ export interface Config {
   dataDir: string;
   masterPassword: string;
   provider: "fake" | "qwen";
-  qwen: { apiKey: string; model: string; url: string; language: string | undefined; pricePerHourUsd: number };
+  qwen: QwenConfig;
   sockudo: { apiUrl: string; appId: string; key: string; secret: string; client: SockudoClientConfig } | null;
   catchUpSpeed: number;
 }
@@ -42,8 +44,12 @@ export function loadConfig(rawEnv: Record<string, string | undefined> = process.
     };
   }
 
-  const qwenPrice = Number(env.QWEN_PRICE_PER_HOUR_USD ?? 0.324);
-  if (!Number.isFinite(qwenPrice) || qwenPrice < 0) throw new Error("QWEN_PRICE_PER_HOUR_USD must be a number ≥ 0");
+  const price = (name: string, fallback: number) => {
+    const value = Number(env[name] ?? fallback);
+    if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a number ≥ 0`);
+    return value;
+  };
+  const workspaceId = env.DASHSCOPE_WORKSPACE_ID;
 
   return {
     port: Number(env.PORT ?? 3000),
@@ -52,12 +58,20 @@ export function loadConfig(rawEnv: Record<string, string | undefined> = process.
     provider,
     qwen: {
       apiKey: env.DASHSCOPE_API_KEY ?? "",
-      model: env.QWEN_MODEL ?? "qwen3-asr-flash-realtime",
-      url: env.QWEN_URL ?? "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
-      language: env.QWEN_LANGUAGE || undefined,
-      // $0.00009/s, Model Studio's international list price for
-      // qwen3-asr-flash-realtime as of 2026-11. Check your region's rate.
-      pricePerHourUsd: qwenPrice,
+      model: env.QWEN_MODEL ?? "qwen-audio-3.1-asr-flash-streaming",
+      url:
+        env.QWEN_URL ??
+        (workspaceId
+          ? `wss://${workspaceId}.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/inference`
+          : "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference"),
+      workspaceId,
+      languageHints: (env.QWEN_LANGUAGE ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      // Model Studio's international list prices for qwen-audio-3.1-asr-flash-streaming, 2026-11.
+      inputPerMillionUsd: price("QWEN_INPUT_PRICE_PER_MILLION_USD", 0.93),
+      outputPerMillionUsd: price("QWEN_OUTPUT_PRICE_PER_MILLION_USD", 0.7),
     },
     sockudo,
     catchUpSpeed: Number(env.CATCHUP_SPEED ?? 1.5),

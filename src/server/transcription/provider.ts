@@ -11,8 +11,16 @@ export interface TranscriptionCallbacks {
   onPartial(startMs: number, text: string): void;
   /** A finished segment. */
   onSegment(startMs: number, endMs: number, text: string): void;
+  /** What the vendor billed since the last report, for providers that report it. */
+  onUsage?(usage: ProviderUsage): void;
   /** The session can produce nothing more (after finish(), or a fatal error). */
   onClose(error?: Error): void;
+}
+
+export interface ProviderUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
 }
 
 export interface TranscriptionSession {
@@ -26,7 +34,12 @@ export interface TranscriptionSession {
 export interface TranscriptionProvider {
   /** The model; recorded as each segment's source and in usage. */
   readonly name: string;
-  /** What the vendor charges per hour of audio fed, in USD (0 if free). */
+  /**
+   * Estimated USD per hour of audio fed, used for the cost unless the
+   * provider reports actual usage through onUsage.
+   */
   readonly pricePerHourUsd: number;
+  /** Cost comes from onUsage, not from pricePerHourUsd. */
+  readonly reportsUsage?: boolean;
   createSession(callbacks: TranscriptionCallbacks): TranscriptionSession;
 }

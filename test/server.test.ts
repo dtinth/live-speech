@@ -350,7 +350,15 @@ describe("robustness", () => {
     expect(admin.usage.audioMs).toBe(600);
     expect(admin.usage.costUsd).toBeCloseTo(0.0006, 10);
     expect(admin.usage.byStream).toEqual([
-      { streamId: STREAM, model: "fake", audioMs: 600, sessions: 1, costUsd: expect.closeTo(0.0006, 10) },
+      {
+        streamId: STREAM,
+        model: "fake",
+        audioMs: 600,
+        sessions: 1,
+        costUsd: expect.closeTo(0.0006, 10),
+        inputTokens: 0,
+        outputTokens: 0,
+      },
     ]);
     expect(admin.streams[0].costUsd).toBeCloseTo(0.0006, 10);
 

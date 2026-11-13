@@ -77,9 +77,9 @@
   <rect class="ext" x="1090" y="300" width="270" height="180" rx="12"/>
   <text x="1110" y="332" class="t">Transcription provider</text>
   <text x="1110" y="356" class="s">one interface, swappable</text>
-  <text x="1110" y="392" class="l">Qwen3-ASR-Flash-Realtime</text>
-  <text x="1110" y="414" class="l">vendor server_vad →</text>
-  <text x="1110" y="436" class="l">segment start/end ms</text>
+  <text x="1110" y="392" class="l">Qwen-Audio 3.1 ASR streaming</text>
+  <text x="1110" y="414" class="l">vendor VAD, run-task protocol →</text>
+  <text x="1110" y="436" class="l">sentence begin/end ms, tokens</text>
   <text x="1110" y="458" class="l">(fake provider for tests/dev)</text>
 
   <!-- Sockudo -->

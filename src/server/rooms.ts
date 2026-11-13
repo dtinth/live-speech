@@ -19,6 +19,8 @@ export interface UsageRecord {
   audioMs: number;
   sessions: number;
   costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 export interface Room {
@@ -262,24 +264,39 @@ export class RoomService {
   }
 
   /** Records audio fed to a transcription model (and sessions opened) for billing. */
-  addUsage(streamId: string, model: string, usage: { audioMs: number; sessions: number; costUsd: number }) {
+  addUsage(
+    streamId: string,
+    model: string,
+    usage: { audioMs?: number; sessions?: number; costUsd: number; inputTokens?: number; outputTokens?: number },
+  ) {
     this.db
       .query(
-        `INSERT INTO usage (stream_id, model, audio_ms, sessions, cost_usd)
-         SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM streams WHERE id = ?1)
+        `INSERT INTO usage (stream_id, model, audio_ms, sessions, cost_usd, input_tokens, output_tokens)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE EXISTS (SELECT 1 FROM streams WHERE id = ?1)
          ON CONFLICT (stream_id, model) DO UPDATE SET
            audio_ms = audio_ms + excluded.audio_ms,
            sessions = sessions + excluded.sessions,
-           cost_usd = cost_usd + excluded.cost_usd`,
+           cost_usd = cost_usd + excluded.cost_usd,
+           input_tokens = input_tokens + excluded.input_tokens,
+           output_tokens = output_tokens + excluded.output_tokens`,
       )
-      .run(streamId, model, usage.audioMs, usage.sessions, usage.costUsd);
+      .run(
+        streamId,
+        model,
+        usage.audioMs ?? 0,
+        usage.sessions ?? 0,
+        usage.costUsd,
+        usage.inputTokens ?? 0,
+        usage.outputTokens ?? 0,
+      );
   }
 
   /** Transcription usage of each stream in the room. */
   listUsage(roomId: string): UsageRecord[] {
     return this.db
       .query<UsageRecord, [string]>(
-        `SELECT u.stream_id AS streamId, u.model, u.audio_ms AS audioMs, u.sessions, u.cost_usd AS costUsd
+        `SELECT u.stream_id AS streamId, u.model, u.audio_ms AS audioMs, u.sessions, u.cost_usd AS costUsd,
+           u.input_tokens AS inputTokens, u.output_tokens AS outputTokens
          FROM usage u JOIN streams s ON s.id = u.stream_id WHERE s.room_id = ? ORDER BY s.created_at, u.model`,
       )
       .all(roomId);
