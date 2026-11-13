@@ -1,0 +1,23 @@
+{
+  "name": "live-speech",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/server/main.ts",
+    "start": "bun src/server/main.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "opusscript": "^0.1.1",
+    "pusher-js": "^8.6.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^7.0.2"
+  }
+}

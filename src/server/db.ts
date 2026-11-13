@@ -1,0 +1,51 @@
+import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS rooms (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  password TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS streams (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  format TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  -- Estimated server time (ms since epoch) of chunk 0, from clock sync.
+  started_at INTEGER,
+  -- Round-trip time of the ping that produced started_at; lower is better.
+  clock_rtt INTEGER,
+  -- Chunks durably stored: every seq below this is on disk.
+  chunk_count INTEGER NOT NULL DEFAULT 0,
+  -- Bytes of the stream file that hold those chunks.
+  byte_length INTEGER NOT NULL DEFAULT 0,
+  -- Chunks below this have been transcribed and their segments logged.
+  transcribed_until INTEGER NOT NULL DEFAULT 0,
+  ended INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS streams_room ON streams(room_id);
+
+-- Append-only log. Every transcript state is a fold over this table.
+CREATE TABLE IF NOT EXISTS events (
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (room_id, seq)
+);
+`;
+
+export function openDatabase(dataDir: string): Database {
+  mkdirSync(dataDir, { recursive: true });
+  const db = new Database(join(dataDir, "live-speech.sqlite"), { create: true, strict: true });
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA synchronous = NORMAL");
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec(SCHEMA);
+  return db;
+}
