@@ -318,6 +318,37 @@ describe("live updates", () => {
     expect(styles).toEqual([".segment { color: red }", ".segment { color: blue }"]);
   });
 
+  test("word timings are kept for export but left out of the viewer snapshot", async () => {
+    const room = await server.createRoom();
+    (await sendScript(room.id, room.password, [1000, 1001, 0])).close();
+    await server.settle();
+    const json = await server.json(`/api/rooms/${room.id}/transcript.json`);
+    expect(json.segments[0].words).toEqual([
+      { startMs: 0, endMs: 100, text: "w1000" },
+      { startMs: 100, endMs: 200, text: "w1001" },
+    ]);
+    const snapshot = await server.json(`/api/rooms/${room.id}`);
+    expect(Object.values(snapshot.transcript.segments)[0]).not.toHaveProperty("words");
+
+    const res = await server.fetch(`/api/admin/rooms/${room.id}/export`, { auth: MASTER });
+    const exportPath = join(server.dataDir, "export-words.sqlite");
+    await Bun.write(exportPath, await res.arrayBuffer());
+    const exported = new Database(exportPath, { readonly: true });
+    const final = exported.query("SELECT payload FROM events WHERE type = 'segment.final'").get() as { payload: string };
+    expect(JSON.parse(final.payload).words).toHaveLength(2);
+    exported.close();
+  });
+
+  test("word timings are offset to the stream when a session starts mid-stream", async () => {
+    const room = await server.createRoom();
+    (await sendScript(room.id, room.password, [1000, 0])).close();
+    await server.settle();
+    (await sendScript(room.id, room.password, [0, 2000, 0], { from: 2 })).close();
+    await server.settle();
+    const json = await server.json(`/api/rooms/${room.id}/transcript.json`);
+    expect(json.segments[1].words).toEqual([{ startMs: 300, endMs: 400, text: "w2000" }]);
+  });
+
   test("the plain-text transcript is ready for agents", async () => {
     const room = await server.createRoom();
     (await sendScript(room.id, room.password, [1000, 0, 2000, 0])).close();

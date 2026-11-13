@@ -5,6 +5,13 @@
 
 export type AudioFormat = "pcm16" | "opus";
 
+/** A word's timing, in ms from the start of its stream (as the ASR heard it). */
+export interface WordTiming {
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
 export type RoomEventBody =
   | { type: "stream.started"; streamId: string; format: AudioFormat }
   | { type: "stream.clock"; streamId: string; startedAt: number }
@@ -18,6 +25,11 @@ export type RoomEventBody =
       endMs: number;
       text: string;
       source: string;
+      /**
+       * Word timings, if the model gives them. They follow the ASR text, not later
+       * edits. For Thai, Qwen gives sub-word tokens that join up into the text.
+       */
+      words?: WordTiming[];
     }
   | { type: "segment.edited"; segmentId: string; text: string; author: string }
   | {
@@ -65,6 +77,8 @@ export interface SegmentState {
   text: string;
   versions: SegmentVersion[];
   superseded: boolean;
+  /** Word timings from the ASR, if any (see segment.final). */
+  words?: WordTiming[];
 }
 
 export interface TranscriptState {
@@ -115,6 +129,7 @@ export function applyEvent(state: TranscriptState, event: RoomEvent): void {
         text: event.text,
         versions: [{ seq: event.seq, at: event.at, text: event.text, author: event.source }],
         superseded: false,
+        ...(event.words ? { words: event.words } : {}),
       };
       break;
     case "segment.edited": {

@@ -16,12 +16,16 @@ export function createFakeProvider({ threshold = 500, pricePerHourUsd = 0 } = {}
     createSession(callbacks: TranscriptionCallbacks): TranscriptionSession {
       let buffer = new Uint8Array(0);
       let position = 0; // ms of audio consumed
-      let current: { startMs: number; words: string[] } | null = null;
+      let current: {
+        startMs: number;
+        words: string[];
+        timings: { startMs: number; endMs: number; text: string }[];
+      } | null = null;
       let closed = false;
 
       const endSegment = (endMs: number) => {
         if (!current) return;
-        callbacks.onSegment(current.startMs, endMs, current.words.join(" "));
+        callbacks.onSegment(current.startMs, endMs, current.words.join(" "), current.timings);
         current = null;
       };
 
@@ -31,8 +35,9 @@ export function createFakeProvider({ threshold = 500, pricePerHourUsd = 0 } = {}
         for (const s of samples) sum += s * s;
         const rms = Math.sqrt(sum / samples.length);
         if (rms > threshold) {
-          current ??= { startMs: position, words: [] };
+          current ??= { startMs: position, words: [], timings: [] };
           current.words.push(`w${samples[0]}`);
+          current.timings.push({ startMs: position, endMs: position + CHUNK_MS, text: `w${samples[0]}` });
           callbacks.onPartial(current.startMs, current.words.join(" "));
         } else {
           endSegment(position);

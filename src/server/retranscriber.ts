@@ -1,8 +1,9 @@
 import { CHUNK_MS } from "../shared/protocol.ts";
-import type { RoomEventBody } from "../shared/transcript.ts";
+import type { RoomEventBody, WordTiming } from "../shared/transcript.ts";
 import type { AudioStore } from "./audioStore.ts";
 import { createChunkDecoder } from "./decoder.ts";
 import { randomId, type RoomService } from "./rooms.ts";
+import { shiftWords } from "./transcriber.ts";
 import type { TranscriptionProvider } from "./transcription/provider.ts";
 
 /** Give up on a provider that never closes after finish(). */
@@ -126,15 +127,22 @@ export class Retranscriber {
   private async run(job: RetranscriptionJob, format: "pcm16" | "opus", fromSeq: number, toSeq: number) {
     const decoder = createChunkDecoder(format);
     const base = fromSeq * CHUNK_MS;
-    const found: { startMs: number; endMs: number; text: string }[] = [];
+    const found: { startMs: number; endMs: number; text: string; words?: WordTiming[] }[] = [];
     let fedMs = 0;
     let cancelled = false;
     let closed!: (error?: Error) => void;
     const closedPromise = new Promise<Error | undefined>((resolve) => (closed = resolve));
     const session = this.provider.createSession({
       onPartial() {},
-      onSegment(startMs, endMs, text) {
-        if (text.trim()) found.push({ startMs: base + startMs, endMs: base + endMs, text: text.trim() });
+      onSegment(startMs, endMs, text, words) {
+        if (text.trim()) {
+          found.push({
+            startMs: base + startMs,
+            endMs: base + endMs,
+            text: text.trim(),
+            ...(words ? { words: shiftWords(words, base) } : {}),
+          });
+        }
       },
       onUsage: (usage) => {
         try {
@@ -204,7 +212,10 @@ export class Retranscriber {
     }
   }
 
-  private swapIn(job: RetranscriptionJob, found: { startMs: number; endMs: number; text: string }[]) {
+  private swapIn(
+    job: RetranscriptionJob,
+    found: { startMs: number; endMs: number; text: string; words?: WordTiming[] }[],
+  ) {
     // Re-read: segments may have been edited or superseded while this ran.
     const old = this.liveSegments(job.roomId, job.streamId).filter(
       (s) => s.startMs >= job.fromMs && s.endMs <= job.toMs,

@@ -1,6 +1,6 @@
 import type { BunRequest, HTMLBundle, Server } from "bun";
 import { CHUNK_MS, PCM_CHUNK_BYTES } from "../shared/protocol.ts";
-import { orderedSegments } from "../shared/transcript.ts";
+import { orderedSegments, type TranscriptState } from "../shared/transcript.ts";
 import { AudioStore } from "./audioStore.ts";
 import type { SockudoClientConfig } from "./config.ts";
 import { openDatabase } from "./db.ts";
@@ -49,6 +49,13 @@ const error = (status: number, message: string) => json({ error: message }, stat
 function bearer(req: Request) {
   const header = req.headers.get("authorization") ?? "";
   return header.startsWith("Bearer ") ? header.slice(7) : "";
+}
+
+/** Viewers don't show word timings; leave them out of the snapshot to keep it small. */
+function withoutWords(state: TranscriptState): TranscriptState {
+  const segments: TranscriptState["segments"] = {};
+  for (const [id, { words: _, ...segment }] of Object.entries(state.segments)) segments[id] = segment;
+  return { ...state, segments };
 }
 
 export function startApp(options: AppOptions): App {
@@ -112,7 +119,7 @@ export function startApp(options: AppOptions): App {
 
   const snapshot = (room: Room) => ({
     room: publicRoom(room),
-    transcript: rooms.getTranscript(room.id),
+    transcript: withoutWords(rooms.getTranscript(room.id)),
     partials: rooms.getPartials(room.id),
   });
 
@@ -292,6 +299,8 @@ export function startApp(options: AppOptions): App {
             endMs: s.endMs,
             text: s.text,
             edited: s.versions.length > 1,
+            // As the ASR heard it: after an edit, these still spell the original text.
+            ...(s.words ? { words: s.words } : {}),
           })),
           partials: rooms.getPartials(room.id),
         });

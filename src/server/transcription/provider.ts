@@ -1,3 +1,5 @@
+import type { WordTiming } from "../../shared/transcript.ts";
+
 /**
  * A realtime transcription vendor behind one interface.
  *
@@ -9,8 +11,8 @@
 export interface TranscriptionCallbacks {
   /** Live, not-yet-final text of the segment starting at `startMs`. */
   onPartial(startMs: number, text: string): void;
-  /** A finished segment. */
-  onSegment(startMs: number, endMs: number, text: string): void;
+  /** A finished segment, with word timings (same offsets) if the vendor gives them. */
+  onSegment(startMs: number, endMs: number, text: string, words?: WordTiming[]): void;
   /** What the vendor billed since the last report, for providers that report it. */
   onUsage?(usage: ProviderUsage): void;
   /** The session can produce nothing more (after finish(), or a fatal error). */

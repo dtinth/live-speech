@@ -1,4 +1,5 @@
 import { CHUNK_MS } from "../shared/protocol.ts";
+import type { WordTiming } from "../shared/transcript.ts";
 import type { AudioStore } from "./audioStore.ts";
 import { createChunkDecoder, type ChunkDecoder } from "./decoder.ts";
 import { randomId, type RoomService } from "./rooms.ts";
@@ -78,6 +79,11 @@ export class Transcriber {
       this.workers.delete(id);
     }
   }
+}
+
+/** Word timings from session-relative to stream offsets. */
+export function shiftWords(words: WordTiming[], base: number): WordTiming[] {
+  return words.map((w) => ({ startMs: base + w.startMs, endMs: base + w.endMs, text: w.text }));
 }
 
 class StreamWorker {
@@ -223,7 +229,7 @@ class StreamWorker {
         if (this.session !== session) return;
         this.rooms.setPartial(roomId, { streamId: this.streamId, startMs: base + startMs, text });
       },
-      onSegment: (startMs, endMs, text) => {
+      onSegment: (startMs, endMs, text, words) => {
         if (this.session !== session) return;
         this.rooms.setPartial(roomId, { streamId: this.streamId, startMs: base + startMs, text: "" }, true);
         if (text.trim()) {
@@ -235,6 +241,7 @@ class StreamWorker {
             endMs: base + endMs,
             text: text.trim(),
             source: this.provider.name,
+            ...(words ? { words: shiftWords(words, base) } : {}),
           });
         }
         this.rooms.setTranscribedUntil(this.streamId, Math.floor((base + endMs) / CHUNK_MS));

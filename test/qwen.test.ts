@@ -58,7 +58,17 @@ test("speaks run-task: audio after task-started, sentences become segments, usag
       ws.send(sentence({ sentence_id: 1, begin_time: 100, end_time: null, text: "สวัสดี", sentence_begin: true }));
       ws.send(
         sentence(
-          { sentence_id: 1, begin_time: 100, end_time: 900, text: "สวัสดี Bun", sentence_end: true },
+          {
+            sentence_id: 1,
+            begin_time: 100,
+            end_time: 900,
+            text: "สวัสดี Bun",
+            sentence_end: true,
+            words: [
+              { begin_time: 100, end_time: 500, text: "สวัสดี", punctuation: "" },
+              { begin_time: 500, end_time: 900, text: "Bun", punctuation: "." },
+            ],
+          },
           { input_tokens: 40, output_tokens: 3 },
         ),
       );
@@ -71,7 +81,7 @@ test("speaks run-task: audio after task-started, sentences become segments, usag
   const closed = Promise.withResolvers<Error | undefined>();
   const session = provider(url).createSession({
     onPartial: (startMs, text) => log.push(["partial", startMs, text]),
-    onSegment: (startMs, endMs, text) => log.push(["segment", startMs, endMs, text]),
+    onSegment: (startMs, endMs, text, words) => log.push(["segment", startMs, endMs, text, words]),
     onUsage: (u) => log.push(["usage", u.inputTokens, u.outputTokens, u.costUsd]),
     onClose: closed.resolve,
   });
@@ -94,7 +104,16 @@ test("speaks run-task: audio after task-started, sentences become segments, usag
   expect(log).toEqual([
     ["partial", 100, "สวัสดี"],
     ["usage", 40, 3, (40 * 1 + 3 * 2) / 1e6],
-    ["segment", 100, 900, "สวัสดี Bun"],
+    [
+      "segment",
+      100,
+      900,
+      "สวัสดี Bun",
+      [
+        { startMs: 100, endMs: 500, text: "สวัสดี" },
+        { startMs: 500, endMs: 900, text: "Bun." },
+      ],
+    ],
     ["usage", 45, 1, (45 * 1 + 1 * 2) / 1e6],
   ]);
 });

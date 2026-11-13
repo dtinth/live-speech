@@ -117,7 +117,21 @@ export function createQwenProvider(config: QwenConfig): TranscriptionProvider {
             const startMs = Number(sentence.begin_time ?? 0);
             const text = normalizeThai(String(sentence.text ?? ""));
             if (sentence.sentence_end) {
-              callbacks.onSegment(startMs, Number(sentence.end_time ?? startMs), text);
+              const words = Array.isArray(sentence.words)
+                ? sentence.words
+                    .filter((w: any) => typeof w?.begin_time === "number" && typeof w?.end_time === "number")
+                    .map((w: any) => ({
+                      startMs: w.begin_time,
+                      endMs: w.end_time,
+                      text: normalizeThai(`${w.text ?? ""}${w.punctuation ?? ""}`),
+                    }))
+                : undefined;
+              callbacks.onSegment(
+                startMs,
+                Number(sentence.end_time ?? startMs),
+                text,
+                words?.length ? words : undefined,
+              );
             } else {
               callbacks.onPartial(startMs, text);
             }
