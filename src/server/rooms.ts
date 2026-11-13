@@ -292,16 +292,39 @@ export class RoomService {
   // Event log
 
   appendEvent(roomId: string, body: RoomEventBody): RoomEvent | null {
+    return this.appendEvents(roomId, [body])?.[0] ?? null;
+  }
+
+  /** Appends several events atomically: all of them are logged, or none. */
+  appendEvents(roomId: string, bodies: RoomEventBody[]): RoomEvent[] | null {
     // A late callback (e.g. a vendor answering after the room was deleted) has nowhere to go.
     if (!this.getRoom(roomId)) return null;
     const transcript = this.getTranscript(roomId);
-    const event = { ...body, seq: transcript.seq + 1, at: this.now() } as RoomEvent;
-    this.db
-      .query("INSERT INTO events (room_id, seq, type, payload, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(roomId, event.seq, event.type, JSON.stringify(body), event.at);
-    applyEvent(transcript, event);
-    this.broadcast(roomId, { kind: "event", event });
-    return event;
+    const at = this.now();
+    const events = bodies.map((body, i) => ({ ...body, seq: transcript.seq + 1 + i, at }) as RoomEvent);
+    const insert = this.db.query("INSERT INTO events (room_id, seq, type, payload, created_at) VALUES (?, ?, ?, ?, ?)");
+    this.db.transaction(() => {
+      bodies.forEach((body, i) => insert.run(roomId, events[i]!.seq, body.type, JSON.stringify(body), at));
+    })();
+    for (const event of events) {
+      applyEvent(transcript, event);
+      this.broadcast(roomId, { kind: "event", event });
+    }
+    return events;
+  }
+
+  /** Logged events of one type whose `reason` matches, oldest first. */
+  findEventsByReason<T extends "segments.superseded" | "segments.restored">(
+    roomId: string,
+    type: T,
+    reason: string,
+  ): Extract<RoomEvent, { type: T }>[] {
+    return this.db
+      .query<{ seq: number; payload: string; created_at: number }, [string, string, string]>(
+        "SELECT seq, payload, created_at FROM events WHERE room_id = ? AND type = ? AND json_extract(payload, '$.reason') = ? ORDER BY seq",
+      )
+      .all(roomId, type, reason)
+      .map((r) => ({ ...JSON.parse(r.payload), seq: r.seq, at: r.created_at }));
   }
 
   eventsSince(roomId: string, after: number, limit = 1000): RoomEvent[] {

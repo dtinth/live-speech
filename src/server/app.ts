@@ -8,6 +8,7 @@ import { createChunkDecoder } from "./decoder.ts";
 import { createIngestHandler, ingestSocketData, type IngestSocketData } from "./ingest.ts";
 import type { Publisher } from "./publisher.ts";
 import { RoomService, safeEqual, type Room } from "./rooms.ts";
+import { RetranscribeError, Retranscriber } from "./retranscriber.ts";
 import { Transcriber, type TranscriberOptions } from "./transcriber.ts";
 import type { TranscriptionProvider } from "./transcription/provider.ts";
 import { wavHeader } from "./wav.ts";
@@ -35,6 +36,7 @@ export interface App {
   url: URL;
   rooms: RoomService;
   transcriber: Transcriber;
+  retranscriber: Retranscriber;
   stop(): Promise<void>;
 }
 
@@ -58,6 +60,9 @@ export function startApp(options: AppOptions): App {
     idleMs: 5000,
     retryMs: 2000,
     ...options.transcriber,
+  });
+  const retranscriber = new Retranscriber(rooms, audio, options.provider, {
+    catchUpSpeed: options.transcriber?.catchUpSpeed ?? 1.5,
   });
   const ingest = createIngestHandler(rooms, transcriber, { pingIntervalMs: options.pingIntervalMs ?? 2000 });
 
@@ -150,6 +155,7 @@ export function startApp(options: AppOptions): App {
           if (!isAdmin(req)) return error(401, "Wrong master password");
           if (!rooms.getRoom(req.params.roomId)) return error(404, "No such room");
           transcriber.forget(rooms.listStreams(req.params.roomId).map((s) => s.id));
+          retranscriber.stop(req.params.roomId);
           ingest.disconnectRoom(req.params.roomId, "Room deleted");
           rooms.deleteRoom(req.params.roomId);
           return json({ deleted: true });
@@ -163,6 +169,54 @@ export function startApp(options: AppOptions): App {
           if (!room) return error(404, "No such room");
           ingest.disconnectRoom(room.id, "Room password changed");
           return json(adminRoom(room));
+        },
+      },
+
+      "/api/admin/rooms/:roomId/streams/:streamId/retranscribe": {
+        POST: async (req) => {
+          if (!isAdmin(req)) return error(401, "Wrong master password");
+          if (!rooms.getRoom(req.params.roomId)) return error(404, "No such room");
+          const body = (await req.json().catch(() => ({}))) as { fromMs?: unknown; toMs?: unknown };
+          const ms = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
+          if (
+            (body.fromMs !== undefined && ms(body.fromMs) === undefined) ||
+            (body.toMs !== undefined && ms(body.toMs) === undefined)
+          ) {
+            return error(400, "fromMs and toMs must be non-negative numbers");
+          }
+          try {
+            return json(
+              retranscriber.start(req.params.roomId, req.params.streamId, {
+                fromMs: ms(body.fromMs),
+                toMs: ms(body.toMs),
+              }),
+              202,
+            );
+          } catch (e) {
+            if (e instanceof RetranscribeError) return error(409, e.message);
+            throw e;
+          }
+        },
+      },
+
+      "/api/admin/rooms/:roomId/retranscriptions": {
+        GET: (req) => {
+          if (!isAdmin(req)) return error(401, "Wrong master password");
+          return json(retranscriber.list(req.params.roomId));
+        },
+      },
+
+      "/api/admin/rooms/:roomId/retranscriptions/:jobId/undo": {
+        POST: (req) => {
+          if (!isAdmin(req)) return error(401, "Wrong master password");
+          if (!rooms.getRoom(req.params.roomId)) return error(404, "No such room");
+          try {
+            retranscriber.undo(req.params.roomId, req.params.jobId);
+            return json({ undone: true });
+          } catch (e) {
+            if (e instanceof RetranscribeError) return error(409, e.message);
+            throw e;
+          }
         },
       },
 
@@ -344,8 +398,10 @@ export function startApp(options: AppOptions): App {
     url: server.url,
     rooms,
     transcriber,
+    retranscriber,
     async stop() {
       transcriber.stop();
+      retranscriber.stop();
       await server.stop(true);
       await rooms.flushPublishes();
       db.close();

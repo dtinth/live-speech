@@ -54,6 +54,20 @@ function duration(ms: number) {
   return `${h ? `${h}h ` : ""}${m}m ${String(s % 60).padStart(2, "0")}s`;
 }
 
+interface Retranscription {
+  id: string;
+  streamId: string;
+  fromMs: number;
+  toMs: number;
+  model: string;
+  status: "running" | "done" | "failed";
+  progressMs: number;
+  error?: string;
+  replaced?: number;
+  added?: number;
+  undone?: boolean;
+}
+
 function usd(amount: number) {
   return `$${amount.toFixed(amount > 0 && amount < 1 ? 4 : 2)}`;
 }
@@ -187,6 +201,17 @@ function RoomCard({
   refresh: () => Promise<void>;
 }) {
   const [showPassword, setShowPassword] = useState(false);
+  const [jobs, setJobs] = useState<Retranscription[]>([]);
+  const loadJobs = useCallback(async () => {
+    try {
+      setJobs(await (await api(`/api/admin/rooms/${room.id}/retranscriptions`)).json());
+    } catch {}
+  }, [api, room.id]);
+  useEffect(() => {
+    void loadJobs();
+    const timer = setInterval(loadJobs, 2000);
+    return () => clearInterval(timer);
+  }, [loadJobs]);
   const viewerUrl = `${location.origin}/rooms/${room.id}`;
   const senderUrl = `${viewerUrl}/send`;
   const invite = `Audio sender for “${room.name}”\n${senderUrl}\nRoom password: ${room.password}`;
@@ -264,15 +289,64 @@ function RoomCard({
                 <td>{duration(s.transcribedMs)}</td>
                 <td>{usd(s.costUsd)}</td>
                 <td>{s.format}</td>
-                <td>
+                <td className="row">
                   <a href={`/api/rooms/${room.id}/streams/${s.id}/audio.wav`} download>
                     WAV
                   </a>
+                  <button
+                    disabled={jobs.some((j) => j.streamId === s.id && j.status === "running")}
+                    title="Run this stream's recorded audio through the model again. The new segments replace the old ones (edits included); you can undo it."
+                    onClick={attempt(async () => {
+                      if (
+                        !confirm(
+                          `Re-transcribe ${duration(s.transcribedMs)} of audio? This replaces its segments, edits included, You can undo it.`,
+                        )
+                      )
+                        return;
+                      await api(`/api/admin/rooms/${room.id}/streams/${s.id}/retranscribe`, {
+                        method: "POST",
+                        body: "{}",
+                      });
+                      await loadJobs();
+                    })}
+                  >
+                    Re-transcribe
+                  </button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+      )}
+
+      {jobs.length > 0 && (
+        <ul className="jobs">
+          {jobs.map((j) => (
+            <li key={j.id}>
+              Re-transcription of <code>{j.streamId.slice(0, 10)}</code> {duration(j.fromMs)}–{duration(j.toMs)} with{" "}
+              {j.model}:{" "}
+              {j.status === "running" ? (
+                <span className="badge">{Math.round((j.progressMs / Math.max(1, j.toMs - j.fromMs)) * 100)}%</span>
+              ) : j.status === "failed" ? (
+                <span className="error">failed ({j.error}); transcript unchanged</span>
+              ) : j.undone ? (
+                <span className="muted">undone</span>
+              ) : (
+                <>
+                  <span className="badge ok">done</span> {j.replaced} segments → {j.added}{" "}
+                  <button
+                    onClick={attempt(async () => {
+                      await api(`/api/admin/rooms/${room.id}/retranscriptions/${j.id}/undo`, { method: "POST" });
+                      await loadJobs();
+                    })}
+                  >
+                    Undo
+                  </button>
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
 
       <div className="row" style={{ marginTop: 12 }}>

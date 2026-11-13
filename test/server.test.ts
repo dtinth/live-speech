@@ -172,6 +172,99 @@ describe("transcript edits", () => {
   });
 });
 
+describe("re-transcription", () => {
+  async function retranscribe(roomId: string, body: object = {}) {
+    const job = await server.json(`/api/admin/rooms/${roomId}/streams/${STREAM}/retranscribe`, {
+      method: "POST",
+      auth: MASTER,
+      body: JSON.stringify(body),
+    });
+    for (;;) {
+      const jobs = await server.json(`/api/admin/rooms/${roomId}/retranscriptions`, { auth: MASTER });
+      const current = jobs.find((j: { id: string }) => j.id === job.id);
+      if (current.status !== "running") return current;
+      await Bun.sleep(10);
+    }
+  }
+
+  async function segments(roomId: string) {
+    const t = await server.json(`/api/rooms/${roomId}/transcript.json`);
+    return t.segments as { id: string; text: string }[];
+  }
+
+  test("redoes a stream, superseding the old segments in one step, and can be undone", async () => {
+    const room = await server.createRoom();
+    (await sendScript(room.id, room.password, [1000, 0, 2000, 0])).close();
+    await server.settle();
+    const [first] = await segments(room.id);
+    await server.json(`/api/rooms/${room.id}/segments/${first!.id}`, {
+      method: "PATCH",
+      auth: room.password,
+      body: JSON.stringify({ text: "bad edit", author: "agent" }),
+    });
+    expect(await texts(room.id)).toEqual(["bad edit", "w2000"]);
+
+    const job = await retranscribe(room.id);
+    expect(job).toMatchObject({ status: "done", replaced: 2, added: 2, fromMs: 0, toMs: 400 });
+    expect(await texts(room.id)).toEqual(["w1000", "w2000"]);
+    expect((await segments(room.id)).map((s) => s.id)).not.toContain(first!.id);
+
+    await server.json(`/api/admin/rooms/${room.id}/retranscriptions/${job.id}/undo`, { method: "POST", auth: MASTER });
+    expect(await texts(room.id)).toEqual(["bad edit", "w2000"]);
+    const again = await server.fetch(`/api/admin/rooms/${room.id}/retranscriptions/${job.id}/undo`, {
+      method: "POST",
+      auth: MASTER,
+    });
+    expect(again.status).toBe(409);
+  });
+
+  test("a time range is widened to whole segments and leaves the rest alone", async () => {
+    const room = await server.createRoom();
+    (await sendScript(room.id, room.password, [1000, 0, 2000, 2001, 0, 3000, 0])).close();
+    await server.settle();
+    const before = await segments(room.id);
+    const job = await retranscribe(room.id, { fromMs: 250, toMs: 260 });
+    expect(job).toMatchObject({ status: "done", replaced: 1, fromMs: 200, toMs: 400 });
+    const after = await segments(room.id);
+    expect(after.map((s) => s.text)).toEqual(["w1000", "w2000 w2001", "w3000"]);
+    expect(after[0]!.id).toBe(before[0]!.id);
+    expect(after[1]!.id).not.toBe(before[1]!.id);
+    expect(after[2]!.id).toBe(before[2]!.id);
+  });
+
+  test("its audio counts toward the room's cost", async () => {
+    const room = await server.createRoom();
+    (await sendScript(room.id, room.password, [1000, 0])).close();
+    await server.settle();
+    await retranscribe(room.id);
+    const [admin] = await server.json("/api/admin/rooms", { auth: MASTER });
+    expect(admin.usage.byStream[0]).toMatchObject({ audioMs: 400, sessions: 2 });
+  });
+
+  test("a failed run changes nothing", async () => {
+    const room = await server.createRoom();
+    (await sendScript(room.id, room.password, [1000, 0])).close();
+    await server.settle();
+    const seq = (await server.json(`/api/rooms/${room.id}`)).transcript.seq;
+    // Lose the audio out from under it.
+    server.app.rooms["db"].query("DELETE FROM chunks").run();
+    const job = await retranscribe(room.id);
+    expect(job.status).toBe("failed");
+    expect((await server.json(`/api/rooms/${room.id}`)).transcript.seq).toBe(seq);
+    expect(await texts(room.id)).toEqual(["w1000"]);
+  });
+
+  test("needs the master password and transcribed audio", async () => {
+    const room = await server.createRoom();
+    const path = `/api/admin/rooms/${room.id}/streams/${STREAM}/retranscribe`;
+    expect((await server.fetch(path, { method: "POST", auth: room.password })).status).toBe(401);
+    expect((await server.fetch(path, { method: "POST", auth: MASTER })).status).toBe(409);
+    expect(
+      (await server.fetch(path, { method: "POST", auth: MASTER, body: JSON.stringify({ fromMs: -1 }) })).status,
+    ).toBe(400);
+  });
+});
+
 describe("live updates", () => {
   test("events are published in order with sequence numbers, and can be fetched since a seq", async () => {
     const room = await server.createRoom();

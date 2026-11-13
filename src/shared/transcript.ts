@@ -20,7 +20,15 @@ export type RoomEventBody =
       source: string;
     }
   | { type: "segment.edited"; segmentId: string; text: string; author: string }
-  | { type: "segments.superseded"; segmentIds: string[]; reason: string };
+  | {
+      type: "segments.superseded";
+      segmentIds: string[];
+      reason: string;
+      /** The segments that took their place, if any (a re-transcription's output). */
+      replacedBy?: string[];
+    }
+  /** Brings superseded segments back, e.g. when a re-transcription is undone. */
+  | { type: "segments.restored"; segmentIds: string[]; reason: string };
 
 export type RoomEvent = RoomEventBody & { seq: number; at: number };
 
@@ -119,6 +127,12 @@ export function applyEvent(state: TranscriptState, event: RoomEvent): void {
       for (const id of event.segmentIds) {
         const segment = state.segments[id];
         if (segment) state.segments[id] = { ...segment, superseded: true };
+      }
+      break;
+    case "segments.restored":
+      for (const id of event.segmentIds) {
+        const segment = state.segments[id];
+        if (segment) state.segments[id] = { ...segment, superseded: false };
       }
       break;
   }
