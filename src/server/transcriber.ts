@@ -65,6 +65,14 @@ export class Transcriber {
     for (const worker of this.workers.values()) worker.stop();
     this.workers.clear();
   }
+
+  /** Stops transcribing these streams (e.g. their room is being deleted). */
+  forget(streamIds: string[]) {
+    for (const id of streamIds) {
+      this.workers.get(id)?.stop();
+      this.workers.delete(id);
+    }
+  }
 }
 
 class StreamWorker {
@@ -111,6 +119,8 @@ class StreamWorker {
   private exit() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
+    this.session?.close();
+    this.session = null;
     this.decoder?.dispose();
     this.decoder = null;
     this.onExit();
@@ -148,7 +158,14 @@ class StreamWorker {
         this.session!.sendAudio(this.decoder!.decode(chunk.payload));
         this.nextSeq = chunk.seq + 1;
         this.fedInSession++;
-        if (++fed >= budget) break;
+        fed++;
+      }
+      if (fed === 0) {
+        // The stream claims chunks the store doesn't have; feeding can't progress.
+        console.error(`[transcriber] stream ${this.streamId}: chunk ${this.nextSeq} is missing`);
+        this.session?.close();
+        this.session = null;
+        return this.exit();
       }
     }
     if (fed > 0) this.lastFedAt = now;

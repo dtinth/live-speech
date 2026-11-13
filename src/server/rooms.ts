@@ -127,17 +127,29 @@ export class RoomService {
     return this.getRoom(roomId);
   }
 
+  /** Deletes the room; foreign keys cascade to its streams, chunks and events. */
   deleteRoom(roomId: string) {
-    this.db.transaction(() => {
-      this.db.query("DELETE FROM chunks WHERE stream_id IN (SELECT id FROM streams WHERE room_id = ?)").run(roomId);
-      this.db.query("DELETE FROM events WHERE room_id = ?").run(roomId);
-      this.db.query("DELETE FROM streams WHERE room_id = ?").run(roomId);
-      this.db.query("DELETE FROM rooms WHERE id = ?").run(roomId);
-    })();
-    // Return the freed pages to the filesystem.
-    this.db.exec("PRAGMA incremental_vacuum");
+    this.db.query("DELETE FROM rooms WHERE id = ?").run(roomId);
     this.transcripts.delete(roomId);
     this.partials.delete(roomId);
+    this.reclaimSpace();
+  }
+
+  /**
+   * Gives freed pages back to the filesystem a little at a time, so a big
+   * delete doesn't stall the event loop that acks every live sender.
+   */
+  private reclaimSpace() {
+    const step = () => {
+      try {
+        this.db.exec("PRAGMA incremental_vacuum(2000)");
+        const { freelist_count } = this.db.query<{ freelist_count: number }, []>("PRAGMA freelist_count").get()!;
+        if (freelist_count > 0) setTimeout(step, 10);
+      } catch {
+        // The database was closed (server stopping); the next delete resumes it.
+      }
+    };
+    setTimeout(step, 0);
   }
 
   // Streams
@@ -212,7 +224,9 @@ export class RoomService {
 
   // Event log
 
-  appendEvent(roomId: string, body: RoomEventBody): RoomEvent {
+  appendEvent(roomId: string, body: RoomEventBody): RoomEvent | null {
+    // A late callback (e.g. a vendor answering after the room was deleted) has nowhere to go.
+    if (!this.getRoom(roomId)) return null;
     const transcript = this.getTranscript(roomId);
     const event = { ...body, seq: transcript.seq + 1, at: this.now() } as RoomEvent;
     this.db
@@ -255,6 +269,7 @@ export class RoomService {
   }
 
   setPartial(roomId: string, partial: LivePartial, cleared = false) {
+    if (!this.getRoom(roomId)) return;
     let map = this.partials.get(roomId);
     if (!map) this.partials.set(roomId, (map = new Map()));
     if (cleared) map.delete(partial.streamId);

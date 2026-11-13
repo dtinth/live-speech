@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { join } from "node:path";
 import { MASTER, TestServer, pcmChunk, script } from "./harness.ts";
 
 let server: TestServer;
@@ -212,5 +214,18 @@ describe("robustness", () => {
     await server.json(`/api/admin/rooms/${room.id}`, { method: "DELETE", auth: MASTER });
     expect((await server.fetch(`/api/rooms/${room.id}`)).status).toBe(404);
     expect((await server.fetch(`/api/rooms/${room.id}/streams/${STREAM}/audio.wav`)).status).toBe(404);
+    const db = new Database(join(server.dataDir, "live-speech.sqlite"), { readonly: true });
+    expect(db.query("SELECT count(*) AS n FROM chunks").get()).toEqual({ n: 0 });
+    expect(db.query("SELECT count(*) AS n FROM events").get()).toEqual({ n: 0 });
+    db.close();
+  });
+
+  test("deleting a room while it is being transcribed stops cleanly", async () => {
+    const room = await server.createRoom();
+    const sender = await sendScript(room.id, room.password, [1000, 1001, 1002]);
+    await server.json(`/api/admin/rooms/${room.id}`, { method: "DELETE", auth: MASTER });
+    sender.close();
+    await server.settle();
+    expect((await server.json("/api/admin/rooms", { auth: MASTER })).length).toBe(0);
   });
 });

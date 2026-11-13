@@ -132,6 +132,7 @@ export function startApp(options: AppOptions): App {
         DELETE: (req) => {
           if (!isAdmin(req)) return error(401, "Wrong master password");
           if (!rooms.getRoom(req.params.roomId)) return error(404, "No such room");
+          transcriber.forget(rooms.listStreams(req.params.roomId).map((s) => s.id));
           rooms.deleteRoom(req.params.roomId);
           return json({ deleted: true });
         },

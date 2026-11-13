@@ -49,10 +49,14 @@ CREATE TABLE IF NOT EXISTS events (
 export function openDatabase(dataDir: string): Database {
   mkdirSync(dataDir, { recursive: true });
   const db = new Database(join(dataDir, "live-speech.sqlite"), { create: true, strict: true });
-  // Must precede table creation; lets deleting a room give space back.
+  // Lets deleting a room give space back. It only takes effect on a database
+  // that already has tables after a full VACUUM, so do that once if needed.
   db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+  if (db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()!.auto_vacuum !== 2) db.exec("VACUUM");
   db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA synchronous = NORMAL");
+  // An ack tells the sender it may delete its copy, so a commit must survive
+  // power loss: fsync every transaction.
+  db.exec("PRAGMA synchronous = FULL");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
   return db;
