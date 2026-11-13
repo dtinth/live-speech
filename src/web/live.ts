@@ -56,7 +56,11 @@ export class LiveRoom {
   private catchingUp: Promise<void> | null = null;
   private disposed = false;
 
-  constructor(private readonly roomId: string) {}
+  private readonly api: string;
+
+  constructor(private readonly roomId: string) {
+    this.api = `/api/rooms/${encodeURIComponent(roomId)}`;
+  }
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -79,9 +83,18 @@ export class LiveRoom {
       setTimeout(() => !this.disposed && this.start(), 3000);
       return;
     }
-    const config = (await fetch("/api/config").then((r) => r.json())) as {
-      sockudo: { key: string; wsHost: string; wsPort: number; forceTLS: boolean } | null;
-    };
+    let config: { sockudo: { key: string; wsHost: string; wsPort: number; forceTLS: boolean } | null };
+    try {
+      const res = await fetch("/api/config");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      config = await res.json();
+    } catch {
+      // Mid-redeploy, perhaps. Poll meanwhile, and try Sockudo again shortly.
+      if (!this.timer) this.timer = setInterval(() => this.catchUp(), 1000);
+      setTimeout(() => !this.disposed && this.start(), 3000);
+      return;
+    }
+    if (this.timer) clearInterval(this.timer);
     if (config.sockudo) {
       this.connectSockudo(config.sockudo);
       this.timer = setInterval(() => this.catchUp(), 15000);
@@ -98,7 +111,7 @@ export class LiveRoom {
   }
 
   private async loadSnapshot() {
-    const res = await fetch(`/api/rooms/${this.roomId}`);
+    const res = await fetch(this.api);
     if (res.status === 404) throw new Error("This room does not exist.");
     if (!res.ok) throw new Error(`Could not load the room (${res.status}).`);
     const snapshot = (await res.json()) as Snapshot;
@@ -133,6 +146,8 @@ export class LiveRoom {
       }
     });
     const channel = pusher.subscribe(`room-${this.roomId}`);
+    // Events published between connecting and subscribing would be missed.
+    channel.bind("pusher:subscription_succeeded", () => void this.catchUp());
     channel.bind("event", (message: LiveMessage & { kind: "event" }) => this.receiveEvent(message.event));
     channel.bind("partial", (message: LiveMessage & { kind: "partial" }) => this.receivePartial(message));
   }
@@ -148,6 +163,8 @@ export class LiveRoom {
   }
 
   private receivePartial(message: { seq: number; partial: LivePartial; cleared: boolean }) {
+    // Published before an event we already have (e.g. via catch-up): stale.
+    if (message.seq < this.state.transcript.seq) return;
     const partials = { ...this.state.partials };
     if (message.cleared) delete partials[message.partial.streamId];
     else partials[message.partial.streamId] = message.partial;
@@ -157,8 +174,14 @@ export class LiveRoom {
 
   private applyEvents(events: RoomEvent[]) {
     if (events.length === 0) return;
-    // Copy-on-write so React sees a new object.
-    const transcript: TranscriptState = structuredClone(this.state.transcript);
+    // applyEvent replaces changed segments, so copying the maps is enough for
+    // React to see the change while unchanged segments keep their identity.
+    const previous = this.state.transcript;
+    const transcript: TranscriptState = {
+      seq: previous.seq,
+      streams: { ...previous.streams },
+      segments: { ...previous.segments },
+    };
     for (const event of events) {
       if (event.seq === transcript.seq + 1) applyEvent(transcript, event);
     }
@@ -175,12 +198,13 @@ export class LiveRoom {
     this.catchingUp ??= (async () => {
       try {
         for (;;) {
-          const res = await fetch(`/api/rooms/${this.roomId}/events?after=${this.state.transcript.seq}`);
+          const res = await fetch(`${this.api}/events?after=${this.state.transcript.seq}`);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const body = (await res.json()) as { events: RoomEvent[]; seq: number; partials: LivePartial[] };
           this.applyEvents(body.events);
           if (this.state.connection === "polling" || body.events.length === 0) {
-            this.update({ partials: Object.fromEntries(body.partials.map((p) => [p.streamId, p])) });
+            const partials = Object.fromEntries(body.partials.map((p) => [p.streamId, p]));
+            if (JSON.stringify(partials) !== JSON.stringify(this.state.partials)) this.update({ partials });
           }
           if (this.state.transcript.seq >= body.seq) break;
         }

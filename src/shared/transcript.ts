@@ -67,7 +67,11 @@ export function emptyTranscript(): TranscriptState {
   return { seq: 0, streams: {}, segments: {} };
 }
 
-/** Applies one event in place. Events must be applied in seq order. */
+/**
+ * Applies one event, in seq order. The state's maps are updated in place, but
+ * a changed stream or segment is replaced by a new object rather than
+ * mutated, so a UI can copy just the maps and memoize per segment.
+ */
 export function applyEvent(state: TranscriptState, event: RoomEvent): void {
   state.seq = event.seq;
   switch (event.type) {
@@ -82,12 +86,12 @@ export function applyEvent(state: TranscriptState, event: RoomEvent): void {
       break;
     case "stream.clock": {
       const stream = state.streams[event.streamId];
-      if (stream) stream.startedAt = event.startedAt;
+      if (stream) state.streams[event.streamId] = { ...stream, startedAt: event.startedAt };
       break;
     }
     case "stream.ended": {
       const stream = state.streams[event.streamId];
-      if (stream) stream.ended = true;
+      if (stream) state.streams[event.streamId] = { ...stream, ended: true };
       break;
     }
     case "segment.final":
@@ -104,14 +108,17 @@ export function applyEvent(state: TranscriptState, event: RoomEvent): void {
     case "segment.edited": {
       const segment = state.segments[event.segmentId];
       if (!segment) break;
-      segment.text = event.text;
-      segment.versions.push({ seq: event.seq, at: event.at, text: event.text, author: event.author });
+      state.segments[event.segmentId] = {
+        ...segment,
+        text: event.text,
+        versions: [...segment.versions, { seq: event.seq, at: event.at, text: event.text, author: event.author }],
+      };
       break;
     }
     case "segments.superseded":
       for (const id of event.segmentIds) {
         const segment = state.segments[id];
-        if (segment) segment.superseded = true;
+        if (segment) state.segments[id] = { ...segment, superseded: true };
       }
       break;
   }

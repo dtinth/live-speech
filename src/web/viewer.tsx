@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { orderedSegments, segmentTime, type SegmentState, type TranscriptState } from "../shared/transcript.ts";
 import { LiveRoom, type ConnectionState } from "./live.ts";
 
 const roomId = decodeURIComponent(location.pathname.split("/")[2] ?? "");
 const passwordKey = `live-speech:room-password:${roomId}`;
+const api = `/api/rooms/${encodeURIComponent(roomId)}`;
 
 function storedPassword() {
   try {
@@ -21,8 +22,10 @@ function storePassword(password: string) {
   } catch {}
 }
 
+const timeFormat = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
 function clock(ms: number) {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return timeFormat.format(ms);
 }
 
 function useLiveRoom() {
@@ -85,7 +88,7 @@ function App() {
       candidate = prompt("Room password (to edit the transcript):") ?? "";
       if (!candidate) return;
     }
-    const res = await fetch(`/api/rooms/${roomId}/auth`, {
+    const res = await fetch(`${api}/auth`, {
       method: "POST",
       headers: { authorization: `Bearer ${candidate}` },
     });
@@ -117,7 +120,7 @@ function App() {
             >
               Captions
             </button>
-            <a className="button" href={`/api/rooms/${roomId}/transcript.txt`} download={`${state.room.name}.txt`}>
+            <a className="button" href={`${api}/transcript.txt`} download={`${state.room.name}.txt`}>
               Download .txt
             </a>
             {editing ? (
@@ -163,7 +166,7 @@ function Transcript({
     const onScroll = () => {
       // Following = the live end of the transcript is (nearly) on screen.
       const end = endRef.current?.getBoundingClientRect().top ?? 0;
-      setFollow(end < window.innerHeight + 120);
+      setFollow(end < window.innerHeight + 40);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
@@ -203,7 +206,8 @@ function Transcript({
   );
 }
 
-function Segment({
+// Memoized: with thousands of segments, only changed ones should re-render.
+const Segment = memo(function Segment({
   segment,
   time,
   editing,
@@ -223,7 +227,7 @@ function Segment({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/rooms/${roomId}/segments/${segment.id}`, {
+      const res = await fetch(`${api}/segments/${encodeURIComponent(segment.id)}`, {
         method: "PATCH",
         headers: { authorization: `Bearer ${password}`, "content-type": "application/json" },
         body: JSON.stringify({ ...body, author: "viewer" }),
@@ -290,7 +294,7 @@ function Segment({
       {segment.versions.length > 1 && <span className="edited muted"> (edited)</span>}
     </p>
   );
-}
+});
 
 function Captions({ segments, partialText, onExit }: { segments: SegmentState[]; partialText: string; onExit: () => void }) {
   useEffect(() => {
@@ -318,7 +322,7 @@ function Captions({ segments, partialText, onExit }: { segments: SegmentState[];
 }
 
 function AgentHelp() {
-  const base = `${location.origin}/api/rooms/${roomId}`;
+  const base = `${location.origin}${api}`;
   const prompt = `The live transcript of a talk is at ${base}/transcript.txt (plain text, one segment per line). For structured data with segment ids and timings, GET ${base}/transcript.json. To follow along without re-reading everything, GET ${base}/events?after=<seq> with the last seq you saw.`;
   return (
     <details className="card agent-help">

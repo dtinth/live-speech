@@ -178,14 +178,24 @@ function RoomCard({
   const invite = `Audio sender for “${room.name}”\n${senderUrl}\nRoom password: ${room.password}`;
   const totalMs = room.streams.reduce((n, s) => n + s.durationMs, 0);
 
-  const exportRoom = async () => {
+  /** Runs an admin action, reporting failure instead of failing silently. */
+  const attempt = (action: () => Promise<void>) => async () => {
+    try {
+      await action();
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  };
+
+  const exportRoom = attempt(async () => {
     const data = await (await api(`/api/admin/rooms/${room.id}/export`)).blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(data);
     a.download = `live-speech-${room.id}.sqlite`;
     a.click();
-    URL.revokeObjectURL(a.href);
-  };
+    // Revoking synchronously can cancel the download in some browsers.
+    setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
+  });
 
   return (
     <div className="card">
@@ -247,24 +257,24 @@ function RoomCard({
       <div className="row" style={{ marginTop: 12 }}>
         <button onClick={exportRoom}>Export room (audio + transcript)</button>
         <button
-          onClick={async () => {
+          onClick={attempt(async () => {
             if (!confirm(`Give “${room.name}” a new password? Senders using the old one will be cut off.`)) return;
             await api(`/api/admin/rooms/${room.id}/password`, { method: "POST" });
             await refresh();
-          }}
+          })}
         >
           New password
         </button>
         <button
           className="danger"
-          onClick={async () => {
+          onClick={attempt(async () => {
             const answer = prompt(
               `Delete “${room.name}” with all its audio and transcript? This cannot be undone. Export first.\n\nType the room name to confirm:`,
             );
             if (answer !== room.name) return;
             await api(`/api/admin/rooms/${room.id}`, { method: "DELETE" });
             await refresh();
-          }}
+          })}
         >
           Delete room
         </button>
