@@ -30,6 +30,7 @@ interface AdminRoom {
   createdAt: number;
   streams: AdminStream[];
   usage: { audioMs: number; costUsd: number; byStream: AdminUsage[] };
+  senders: { streamId: string | null; connectedMs: number; silentMs: number | null }[];
 }
 
 function readMaster() {
@@ -66,6 +67,17 @@ interface Retranscription {
   replaced?: number;
   added?: number;
   undone?: boolean;
+}
+
+/** A sender is live if audio arrived recently; chunks come every 100 ms. */
+function SenderBadge({ sender }: { sender: AdminRoom["senders"][number] | undefined }) {
+  if (!sender) return null;
+  if (sender.silentMs !== null && sender.silentMs < 3000) return <span className="badge ok">● live</span>;
+  return (
+    <span className="badge warn" title="Connected, but no audio is arriving">
+      connected, no audio{sender.silentMs !== null ? ` for ${Math.round(sender.silentMs / 1000)} s` : ""}
+    </span>
+  );
 }
 
 function usd(amount: number) {
@@ -240,7 +252,16 @@ function RoomCard({
     <div className="card">
       <div className="row spread">
         <div>
-          <h2 style={{ margin: 0 }}>{room.name}</h2>
+          <h2 style={{ margin: 0 }}>
+            {room.name}{" "}
+            {room.senders.length === 0 ? (
+              <span className="badge">no sender</span>
+            ) : (
+              <SenderBadge
+                sender={[...room.senders].sort((a, b) => (a.silentMs ?? Infinity) - (b.silentMs ?? Infinity))[0]}
+              />
+            )}
+          </h2>
           <span className="muted">
             {room.streams.length} stream{room.streams.length === 1 ? "" : "s"} · {duration(totalMs)} recorded ·{" "}
             <span
@@ -282,7 +303,11 @@ function RoomCard({
               <tr key={s.id}>
                 <td>
                   <code>{s.id.slice(0, 10)}</code>{" "}
-                  <span className={`badge ${s.ended ? "" : "ok"}`}>{s.ended ? "ended" : "open"}</span>
+                  {room.senders.some((x) => x.streamId === s.id) ? (
+                    <SenderBadge sender={room.senders.find((x) => x.streamId === s.id)} />
+                  ) : (
+                    <span className="badge">{s.ended ? "ended" : "open"}</span>
+                  )}
                 </td>
                 <td>{s.startedAt ? new Date(s.startedAt).toLocaleTimeString() : "—"}</td>
                 <td>{duration(s.durationMs)}</td>

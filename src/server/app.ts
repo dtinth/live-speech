@@ -89,6 +89,7 @@ export function startApp(options: AppOptions): App {
     const usage = rooms.listUsage(room.id);
     return {
       ...room,
+      senders: ingest.senders(room.id),
       usage: {
         audioMs: usage.reduce((n, u) => n + u.audioMs, 0),
         costUsd: usage.reduce((n, u) => n + u.costUsd, 0),

@@ -124,6 +124,23 @@ describe("audio ingest", () => {
   });
 });
 
+describe("sender status", () => {
+  test("admin sees which streams have a sender connected and sending", async () => {
+    const room = await server.createRoom();
+    const admin = async () => (await server.json("/api/admin/rooms", { auth: MASTER }))[0];
+    expect((await admin()).senders).toEqual([]);
+    const sender = await server.connectSender(room.id);
+    await sender.hello(room.password, STREAM);
+    expect((await admin()).senders).toEqual([{ streamId: STREAM, connectedMs: expect.any(Number), silentMs: null }]);
+    sender.sendChunk(0, pcmChunk(0));
+    await sender.waitFor("ack");
+    expect((await admin()).senders[0].silentMs).toBeLessThan(1000);
+    sender.close();
+    await Bun.sleep(50);
+    expect((await admin()).senders).toEqual([]);
+  });
+});
+
 describe("clock sync", () => {
   test("the server places the stream on its own clock, ignoring the client's wall clock", async () => {
     const room = await server.createRoom();

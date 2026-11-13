@@ -12,6 +12,18 @@ export interface IngestSocketData {
   pings: Map<number, { perf: number; epoch: number }>;
   nextPingId: number;
   pingTimer: ReturnType<typeof setInterval> | null;
+  connectedAt: number;
+  /** When the last audio frame arrived (Date.now()), for the admin's "live" indicator. */
+  lastChunkAt: number | null;
+}
+
+/** A connected sender, as the admin sees it. */
+export interface SenderStatus {
+  streamId: string | null;
+  /** How long it has been connected, in ms (durations, so the admin's clock doesn't matter). */
+  connectedMs: number;
+  /** Time since its last audio frame, in ms; null if it hasn't sent any. */
+  silentMs: number | null;
 }
 
 export function ingestSocketData(roomId: string): IngestSocketData {
@@ -24,6 +36,8 @@ export function ingestSocketData(roomId: string): IngestSocketData {
     pings: new Map(),
     nextPingId: 1,
     pingTimer: null,
+    connectedAt: Date.now(),
+    lastChunkAt: null,
   };
 }
 
@@ -94,7 +108,11 @@ export function createIngestHandler(rooms: RoomService, transcriber: Transcriber
         break;
       }
       case "pong": {
-        if (typeof message.id !== "number" || typeof message.elapsed !== "number" || !Number.isFinite(message.elapsed)) {
+        if (
+          typeof message.id !== "number" ||
+          typeof message.elapsed !== "number" ||
+          !Number.isFinite(message.elapsed)
+        ) {
           return;
         }
         const sent = ws.data.pings.get(message.id);
@@ -120,6 +138,7 @@ export function createIngestHandler(rooms: RoomService, transcriber: Transcriber
     if (!ws.data.stream) return fail(ws, "Send hello first");
     if (raw.byteLength < 4) return fail(ws, "Chunk frame too short");
     ws.data.pending.push(decodeChunkFrame(new Uint8Array(raw)));
+    ws.data.lastChunkAt = Date.now();
     // Batch the frames that arrive together into one disk write and one ack.
     if (!ws.data.flushScheduled) {
       ws.data.flushScheduled = true;
@@ -152,6 +171,17 @@ export function createIngestHandler(rooms: RoomService, transcriber: Transcriber
       } catch (error) {
         console.error("[ingest]", error);
       }
+    },
+
+    /** Senders connected to a room right now. */
+    senders(roomId: string): SenderStatus[] {
+      return [...sockets]
+        .filter((ws) => ws.data.roomId === roomId)
+        .map((ws) => ({
+          streamId: ws.data.stream?.id ?? null,
+          connectedMs: Date.now() - ws.data.connectedAt,
+          silentMs: ws.data.lastChunkAt === null ? null : Date.now() - ws.data.lastChunkAt,
+        }));
     },
 
     /** Cuts off a room's senders, e.g. after its password changes. */
