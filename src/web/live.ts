@@ -181,6 +181,7 @@ export class LiveRoom {
       seq: previous.seq,
       streams: { ...previous.streams },
       segments: { ...previous.segments },
+      css: previous.css,
     };
     for (const event of events) {
       if (event.seq === transcript.seq + 1) applyEvent(transcript, event);

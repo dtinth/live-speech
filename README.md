@@ -61,7 +61,7 @@ Run one replica, and keep Swarm's default `stop-first` update order: two servers
   - re-transcribe a stream (with undo);
   - export a room as a SQLite file (audio, transcript and history), then delete it.
 - **Sender** (`/rooms/:id/send`, room password): press Start. Keep the tab open. Closing it is safe: anything not yet uploaded is sent when the page is opened again.
-- **Viewer** (`/rooms/:id`, public): the live transcript, a captions mode, and text export. The viewer also explains how to point an AI agent at the transcript (`transcript.txt`, `events?after=`) and how to let it fix segments using the room password.
+- **Viewer** (`/rooms/:id`, public): the live transcript, a captions mode, text export, and an API access box with a prompt for AI agents to read it. With the room password, Edit mode lets people fix segments and gives a “Copy prompt for AI editor” button (also in admin) so an agent can fix them over HTTP. Admins can restyle the viewer per room with custom CSS, previewed before it goes live.
 
 ## Cost
 

@@ -297,6 +297,27 @@ describe("live updates", () => {
     expect(since.events.map((e: { seq: number }) => e.seq)).toEqual(events.slice(1).map((e) => e.seq));
   });
 
+  test("custom viewer CSS is set by the admin, pushed live, and kept in history", async () => {
+    const room = await server.createRoom();
+    const put = (css: unknown, auth = MASTER) =>
+      server.fetch(`/api/admin/rooms/${room.id}/css`, { method: "PUT", auth, body: JSON.stringify({ css }) });
+    expect((await put(".segment { color: red }", room.password)).status).toBe(401);
+    expect((await put(42)).status).toBe(400);
+    expect((await put("x".repeat(100_001))).status).toBe(400);
+
+    expect((await put(".segment { color: red }")).status).toBe(200);
+    expect((await put(".segment { color: red }")).status).toBe(200); // unchanged: not logged again
+    expect((await put(".segment { color: blue }")).status).toBe(200);
+    expect((await server.json(`/api/rooms/${room.id}`)).transcript.css).toBe(".segment { color: blue }");
+    expect((await server.json("/api/admin/rooms", { auth: MASTER }))[0].css).toBe(".segment { color: blue }");
+
+    await server.app.rooms.flushPublishes();
+    const styles = server.publisher.published
+      .filter((p) => p.event === "event" && p.data.event.type === "room.style")
+      .map((p) => p.data.event.css);
+    expect(styles).toEqual([".segment { color: red }", ".segment { color: blue }"]);
+  });
+
   test("the plain-text transcript is ready for agents", async () => {
     const room = await server.createRoom();
     (await sendScript(room.id, room.password, [1000, 0, 2000, 0])).close();

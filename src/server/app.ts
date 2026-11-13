@@ -89,6 +89,7 @@ export function startApp(options: AppOptions): App {
     const usage = rooms.listUsage(room.id);
     return {
       ...room,
+      css: rooms.getTranscript(room.id).css,
       senders: ingest.senders(room.id),
       usage: {
         audioMs: usage.reduce((n, u) => n + u.audioMs, 0),
@@ -197,6 +198,21 @@ export function startApp(options: AppOptions): App {
             if (e instanceof RetranscribeError) return error(409, e.message);
             throw e;
           }
+        },
+      },
+
+      "/api/admin/rooms/:roomId/css": {
+        PUT: async (req) => {
+          if (!isAdmin(req)) return error(401, "Wrong master password");
+          const room = rooms.getRoom(req.params.roomId);
+          if (!room) return error(404, "No such room");
+          const body = (await req.json().catch(() => ({}))) as { css?: unknown };
+          if (typeof body.css !== "string") return error(400, "css must be a string");
+          if (body.css.length > 100_000) return error(400, "CSS is too long (100,000 characters at most)");
+          // Logged like any other room change: viewers get it live, and old versions stay in history.
+          if (body.css !== rooms.getTranscript(room.id).css)
+            rooms.appendEvent(room.id, { type: "room.style", css: body.css });
+          return json({ css: body.css });
         },
       },
 

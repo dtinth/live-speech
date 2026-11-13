@@ -80,3 +80,11 @@ test("an event only replaces the segments it changes", async () => {
   expect(after.b.text).toBe("TWO");
   expect(before.b.text).toBe("two");
 });
+
+test("custom CSS arrives as a room.style event", async () => {
+  globalThis.fetch = (async () => Response.json(snapshot)) as unknown as typeof fetch;
+  const live = new LiveRoom("r") as any;
+  await live.loadSnapshot();
+  live.receiveEvent({ type: "room.style", seq: 6, at: 0, css: "body { color: red }" });
+  expect(live.state.transcript.css).toBe("body { color: red }");
+});

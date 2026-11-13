@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { orderedSegments, segmentTime, type SegmentState, type TranscriptState } from "../shared/transcript.ts";
+import { agentEditPrompt, agentReadPrompt } from "./agentPrompt.ts";
 import { LiveRoom, type ConnectionState } from "./live.ts";
 
 const roomId = decodeURIComponent(location.pathname.split("/")[2] ?? "");
@@ -37,6 +38,34 @@ function useLiveRoom() {
   return useSyncExternalStore(live.subscribe, live.getState);
 }
 
+/**
+ * Applies the room's custom CSS after the built-in styles. The admin page
+ * embeds the viewer in an iframe and sends draft CSS by postMessage, so it
+ * can be previewed before it is saved.
+ */
+function useRoomCss(saved: string | undefined) {
+  const [preview, setPreview] = useState<string | null>(null);
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== location.origin || e.data?.type !== "live-speech:preview-css") return;
+      setPreview(typeof e.data.css === "string" ? e.data.css : null);
+    };
+    window.addEventListener("message", onMessage);
+    if (window.parent !== window) window.parent.postMessage({ type: "live-speech:viewer-ready" }, location.origin);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+  const css = preview ?? saved ?? "";
+  useEffect(() => {
+    let style = document.getElementById("room-css") as HTMLStyleElement | null;
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "room-css";
+      document.head.append(style);
+    }
+    style.textContent = css;
+  }, [css]);
+}
+
 const connectionLabel: Record<ConnectionState, [string, string]> = {
   live: ["Live", "ok"],
   polling: ["Live (polling)", "ok"],
@@ -49,6 +78,10 @@ function App() {
   const [captions, setCaptions] = useState(() => new URLSearchParams(location.search).get("mode") === "captions");
   const [password, setPassword] = useState(storedPassword);
   const [editing, setEditing] = useState(false);
+  useRoomCss(state.transcript.css);
+  useEffect(() => {
+    document.body.dataset.mode = captions ? "captions" : "transcript";
+  }, [captions]);
   const segments = useMemo(() => orderedSegments(state.transcript), [state.transcript]);
   const partials = useMemo(
     () =>
@@ -108,8 +141,8 @@ function App() {
       <header className="viewer-header">
         <div className="row spread">
           <div>
-            <h1>{state.room.name}</h1>
-            <span className={`badge ${tone}`}>{label}</span>
+            <h1 className="room-name">{state.room.name}</h1>
+            <span className={`badge status ${tone}`}>{label}</span>
           </div>
           <div className="row">
             <button
@@ -124,7 +157,13 @@ function App() {
               Download .txt
             </a>
             {editing ? (
-              <button onClick={() => setEditing(false)}>Done editing</button>
+              <>
+                <CopyButton
+                  text={agentEditPrompt(`${location.origin}${api}`, password)}
+                  label="Copy prompt for AI editor"
+                />
+                <button onClick={() => setEditing(false)}>Done editing</button>
+              </>
             ) : (
               <button onClick={enableEditing}>Edit</button>
             )}
@@ -145,6 +184,14 @@ function App() {
   );
 }
 
+/**
+ * Scrolls this window only. scrollIntoView would also scroll the pages that
+ * embed it, such as the admin's live preview.
+ */
+function scrollToEnd(behavior: ScrollBehavior) {
+  window.scrollTo({ top: document.documentElement.scrollHeight, behavior });
+}
+
 function Transcript({
   transcript,
   segments,
@@ -161,23 +208,41 @@ function Transcript({
   const [follow, setFollow] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
 
+  const sectionRef = useRef<HTMLElement>(null);
+  const followRef = useRef(follow);
+  followRef.current = follow;
+
   // Follow the live end unless the reader has scrolled up.
   useEffect(() => {
+    let lastY = window.scrollY;
     const onScroll = () => {
-      // Following = the live end of the transcript is (nearly) on screen.
+      const y = window.scrollY;
       const end = endRef.current?.getBoundingClientRect().top ?? 0;
-      setFollow(end < window.innerHeight + 40);
+      // Only scrolling up stops following. The browser also scrolls by itself
+      // (scroll anchoring when the layout changes, e.g. new custom CSS), and
+      // that must not count as the reader leaving.
+      if (end < window.innerHeight + 40) setFollow(true);
+      else if (y < lastY) setFollow(false);
+      lastY = y;
     };
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    // Stay pinned to the end when the layout changes size (fonts, CSS, window).
+    const observer = new ResizeObserver(() => {
+      if (followRef.current) scrollToEnd("instant");
+    });
+    if (sectionRef.current) observer.observe(sectionRef.current);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      observer.disconnect();
+    };
   }, []);
 
   useLayoutEffect(() => {
-    if (follow && !editing) endRef.current?.scrollIntoView({ block: "end" });
+    if (follow && !editing) scrollToEnd("instant");
   }, [segments, partials, follow, editing]);
 
   return (
-    <section className="transcript">
+    <section className="transcript" ref={sectionRef}>
       {segments.length === 0 && partials.length === 0 && (
         <p className="muted">Nothing has been said yet. The transcript will appear here live.</p>
       )}
@@ -198,7 +263,7 @@ function Transcript({
       ))}
       <div ref={endRef} />
       {!follow && (
-        <button className="primary jump" onClick={() => endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })}>
+        <button className="primary jump" onClick={() => scrollToEnd("smooth")}>
           ↓ Jump to live
         </button>
       )}
@@ -296,7 +361,15 @@ const Segment = memo(function Segment({
   );
 });
 
-function Captions({ segments, partialText, onExit }: { segments: SegmentState[]; partialText: string; onExit: () => void }) {
+function Captions({
+  segments,
+  partialText,
+  onExit,
+}: {
+  segments: SegmentState[];
+  partialText: string;
+  onExit: () => void;
+}) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onExit();
     const onFullscreen = () => !document.fullscreenElement && onExit();
@@ -323,32 +396,35 @@ function Captions({ segments, partialText, onExit }: { segments: SegmentState[];
 
 function AgentHelp() {
   const base = `${location.origin}${api}`;
-  const prompt = `The live transcript of a talk is at ${base}/transcript.txt (plain text, one segment per line). For structured data with segment ids and timings, GET ${base}/transcript.json. To follow along without re-reading everything, GET ${base}/events?after=<seq> with the last seq you saw.`;
+  const prompt = agentReadPrompt(base);
   return (
     <details className="card agent-help">
       <summary>
-        <b>Connect an AI agent</b> <span className="muted">— read (and optionally fix) this transcript over HTTP</span>
+        <b>API access</b>
       </summary>
-      <p>Paste this into your agent:</p>
+      <p>Paste this into your AI agent:</p>
       <pre>{prompt}</pre>
-      <button onClick={() => navigator.clipboard?.writeText(prompt)}>Copy</button>
+      <CopyButton text={prompt} label="Copy prompt" />
       <h3>Endpoints</h3>
       <pre>{`GET ${base}/transcript.txt        # plain text, cheapest to read
 GET ${base}/transcript.json       # segments: id, startMs, endMs, text
 GET ${base}/events?after=SEQ      # only what changed since SEQ`}</pre>
-      <h3>Editing (needs the room password)</h3>
-      <pre>{`curl -X PATCH ${base}/segments/SEGMENT_ID \\
-  -H "authorization: Bearer ROOM_PASSWORD" \\
-  -H "content-type: application/json" \\
-  -d '{"text": "corrected text", "author": "my-agent"}'
-
-# Every edit is kept. Undo by restoring an earlier version:
-curl ${base}/segments/SEGMENT_ID          # lists versions with their seq
-curl -X PATCH ${base}/segments/SEGMENT_ID \\
-  -H "authorization: Bearer ROOM_PASSWORD" \\
-  -H "content-type: application/json" \\
-  -d '{"revertTo": VERSION_SEQ}'`}</pre>
     </details>
+  );
+}
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={async () => {
+        await navigator.clipboard?.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      {copied ? "Copied" : label}
+    </button>
   );
 }
 

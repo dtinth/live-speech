@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { agentEditPrompt } from "./agentPrompt.ts";
 
 const masterKey = "live-speech:master-password";
 
@@ -30,6 +31,7 @@ interface AdminRoom {
   createdAt: number;
   streams: AdminStream[];
   usage: { audioMs: number; costUsd: number; byStream: AdminUsage[] };
+  css: string;
   senders: { streamId: string | null; connectedMs: number; silentMs: number | null }[];
 }
 
@@ -283,6 +285,10 @@ function RoomCard({
         <button onClick={() => setShowPassword((v) => !v)}>{showPassword ? "Hide" : "Show"}</button>
         <CopyButton text={invite} label="Copy invite for audio crew" />
         <CopyButton text={viewerUrl} label="Copy viewer link" />
+        <CopyButton
+          text={agentEditPrompt(`${location.origin}/api/rooms/${room.id}`, room.password)}
+          label="Copy prompt for AI editor"
+        />
       </div>
 
       {room.streams.length > 0 && (
@@ -374,6 +380,8 @@ function RoomCard({
         </ul>
       )}
 
+      <ViewerStyleEditor room={room} api={api} refresh={refresh} />
+
       <div className="row" style={{ marginTop: 12 }}>
         <button onClick={exportRoom}>Export room (audio + transcript)</button>
         <button
@@ -400,6 +408,152 @@ function RoomCard({
         </button>
       </div>
     </div>
+  );
+}
+
+const CSS_HELP: [string, string][] = [
+  ["body", "The page. Its data-mode attribute is transcript or captions."],
+  ['body[data-mode="captions"]', "Only in captions (fullscreen) mode."],
+  [".viewer-header", "Top bar: .room-name (the title), .status (Live badge) and the buttons."],
+  [".transcript", "The list of segments."],
+  [".segment", "One line of the transcript. Inside: .time and .text."],
+  [".segment.partial", "Text still being recognized (not final yet)."],
+  [".captions", "Captions mode backdrop."],
+  [".captions-text", "Captions text: the last few segments, then a .partial span."],
+  [".agent-help", "The “API access” box."],
+];
+
+const CSS_EXAMPLE = `/* Big, high-contrast captions for the projector */
+.captions { background: #000; }
+.captions-text { font-size: 4rem; color: #ff0; }
+
+/* Hide timestamps and the API access box */
+.segment .time, .agent-help { display: none; }`;
+
+/** Custom viewer CSS, previewed live in an embedded viewer before saving. */
+function ViewerStyleEditor({
+  room,
+  api,
+  refresh,
+}: {
+  room: AdminRoom;
+  api: (path: string, init?: RequestInit) => Promise<Response>;
+  refresh: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(room.css);
+  const [saved, setSaved] = useState(room.css);
+  const [mode, setMode] = useState<"transcript" | "captions">("transcript");
+  const [status, setStatus] = useState<string | null>(null);
+  const frame = useRef<HTMLIFrameElement>(null);
+  const dirty = draft !== saved;
+
+  // Follow saves made elsewhere, unless there are unsaved edits here.
+  useEffect(() => {
+    if (!dirty) setDraft(room.css);
+    setSaved(room.css);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room.css]);
+
+  const sendPreview = useCallback(() => {
+    frame.current?.contentWindow?.postMessage({ type: "live-speech:preview-css", css: draft }, location.origin);
+  }, [draft]);
+  useEffect(sendPreview, [sendPreview]);
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.source === frame.current?.contentWindow && e.data?.type === "live-speech:viewer-ready") sendPreview();
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [sendPreview]);
+
+  const save = async () => {
+    try {
+      await api(`/api/admin/rooms/${room.id}/css`, { method: "PUT", body: JSON.stringify({ css: draft }) });
+      setSaved(draft);
+      setStatus("Saved. Viewers have it now.");
+      await refresh();
+    } catch (e) {
+      setStatus((e as Error).message);
+    }
+  };
+
+  return (
+    <details className="style-editor" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>
+        Customize viewer CSS {saved ? <span className="badge">custom</span> : null}{" "}
+        {dirty && <span className="badge warn">unsaved</span>}
+      </summary>
+      {open && (
+        <div className="style-editor-body">
+          <div className="style-editor-edit">
+            <textarea
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setStatus(null);
+              }}
+              spellCheck={false}
+              placeholder={CSS_EXAMPLE}
+              aria-label="Custom CSS for this room's viewer"
+            />
+            <div className="row">
+              <button className="primary" disabled={!dirty} onClick={save}>
+                Save and apply to all viewers
+              </button>
+              <button disabled={!dirty} onClick={() => setDraft(saved)}>
+                Discard changes
+              </button>
+              {status && <span className="muted">{status}</span>}
+            </div>
+            <div className="css-help">
+              <p className="muted">
+                The preview shows your draft; viewers see it only after you save. Your CSS loads after the built-in
+                styles, so plain selectors override them. Useful selectors:
+              </p>
+              <table>
+                <tbody>
+                  {CSS_HELP.map(([selector, what]) => (
+                    <tr key={selector}>
+                      <td>
+                        <code>{selector}</code>
+                      </td>
+                      <td>{what}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="muted">
+                Built-in colors are CSS variables on <code>:root</code> (<code>--bg</code>, <code>--surface</code>,{" "}
+                <code>--text</code>, <code>--muted</code>, <code>--accent</code>, <code>--partial</code>…), so{" "}
+                <code>:root {"{ --bg: #000; }"}</code> restyles everything at once. Every saved version stays in the
+                room's event log.
+              </p>
+              <button onClick={() => setDraft(CSS_EXAMPLE)} disabled={!!draft}>
+                Insert example
+              </button>
+            </div>
+          </div>
+          <div className="style-editor-preview">
+            <div className="row">
+              <span className="muted">Preview</span>
+              <button onClick={() => setMode("transcript")} disabled={mode === "transcript"}>
+                Transcript
+              </button>
+              <button onClick={() => setMode("captions")} disabled={mode === "captions"}>
+                Captions
+              </button>
+            </div>
+            <iframe
+              ref={frame}
+              key={mode}
+              title="Viewer preview"
+              src={`/rooms/${room.id}${mode === "captions" ? "?mode=captions" : ""}`}
+            />
+          </div>
+        </div>
+      )}
+    </details>
   );
 }
 

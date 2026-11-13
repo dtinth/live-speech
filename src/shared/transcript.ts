@@ -27,6 +27,8 @@ export type RoomEventBody =
       /** The segments that took their place, if any (a re-transcription's output). */
       replacedBy?: string[];
     }
+  /** The viewer's custom CSS, set by an admin (empty for none). */
+  | { type: "room.style"; css: string }
   /** Brings superseded segments back, e.g. when a re-transcription is undone. */
   | { type: "segments.restored"; segmentIds: string[]; reason: string };
 
@@ -69,10 +71,12 @@ export interface TranscriptState {
   seq: number;
   streams: Record<string, StreamState>;
   segments: Record<string, SegmentState>;
+  /** Custom CSS for the viewer. */
+  css: string;
 }
 
 export function emptyTranscript(): TranscriptState {
-  return { seq: 0, streams: {}, segments: {} };
+  return { seq: 0, streams: {}, segments: {}, css: "" };
 }
 
 /**
@@ -128,6 +132,9 @@ export function applyEvent(state: TranscriptState, event: RoomEvent): void {
         const segment = state.segments[id];
         if (segment) state.segments[id] = { ...segment, superseded: true };
       }
+      break;
+    case "room.style":
+      state.css = event.css;
       break;
     case "segments.restored":
       for (const id of event.segmentIds) {
