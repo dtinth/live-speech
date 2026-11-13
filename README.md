@@ -51,7 +51,7 @@ Set the environment variables listed in `.env.example`. At minimum, set:
 - `DASHSCOPE_API_KEY`
 - the `SOCKUDO_*` settings. Set `SOCKUDO_WS_URL` to the public `wss://` URL that browsers connect to.
 
-Redeploys are safe. Senders keep recording into IndexedDB and upload the backlog once the server is back. Viewers re-sync from their last sequence number. Any audio that was stored but not yet transcribed is transcribed after startup.
+Run one replica, and keep Swarm's default `stop-first` update order: two servers must never share the database. Redeploys are safe. Senders keep recording into IndexedDB and upload the backlog once the server is back. Viewers re-sync from their last sequence number. Any audio that was stored but not yet transcribed is transcribed after startup.
 
 ## Using it
 
