@@ -1,14 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CHUNK_MS } from "../shared/protocol.ts";
-import type { LivePartial } from "../shared/transcript.ts";
+import {
+  applyEvent,
+  orderedSegments,
+  type LivePartial,
+  type RoomEvent,
+  type TranscriptState,
+} from "../shared/transcript.ts";
 import { IndexedDbChunkStore, type ChunkStore, type StoredStream } from "./sender/chunkStore.ts";
 import { Recorder, listInputDevices } from "./sender/recorder.ts";
-import { StreamUploader, storageWarning, webSocketFactory, type UploaderStatus } from "./sender/uploader.ts";
+import {
+  StreamUploader,
+  randomStreamId,
+  storageWarning,
+  webSocketFactory,
+  type UploaderStatus,
+} from "./sender/uploader.ts";
 
 const roomId = decodeURIComponent(location.pathname.split("/")[2] ?? "");
 const passwordKey = `live-speech:room-password:${roomId}`;
 const deviceKey = "live-speech:input-device";
+/** Pause the transcript preview while this much audio is waiting to upload, to leave the link to the audio. */
+const PREVIEW_PAUSE_CHUNKS = 2000 / CHUNK_MS;
 
 // localStorage can throw (private mode, blocked storage); remembering things is only a convenience.
 function remember(key: string, value: string | null) {
@@ -29,11 +43,6 @@ function ingestUrl() {
   const url = new URL(`/api/rooms/${encodeURIComponent(roomId)}/ingest`, location.href);
   url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
-}
-
-function randomStreamId() {
-  const bytes = crypto.getRandomValues(new Uint8Array(15));
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_");
 }
 
 /**
@@ -93,6 +102,10 @@ function stateBadge(status: UploaderStatus | null) {
       return <span className="badge warn">Connecting…</span>;
     case "backoff":
       return <span className="badge bad">Offline, retrying</span>;
+    case "unauthorized":
+      return <span className="badge bad">Password rejected</span>;
+    case "gone":
+      return <span className="badge bad">Room gone</span>;
     case "done":
       return <span className="badge ok">Finished</span>;
   }
@@ -107,17 +120,13 @@ function useTick(ms: number) {
   }, [ms]);
 }
 
-interface Live {
-  recorder: Recorder;
-  uploader: StreamUploader;
-}
-
 function App() {
   const [roomName, setRoomName] = useState<string | null>(null);
   const [roomError, setRoomError] = useState<string | null>(null);
   const [password, setPassword] = useState<string | null>(null);
   const [store, setStore] = useState<ChunkStore | null>(null);
   const [storeError, setStoreError] = useState<string | null>(null);
+  const [backlog, setBacklog] = useState(0);
 
   useEffect(() => {
     fetch(`/api/rooms/${encodeURIComponent(roomId)}`)
@@ -137,6 +146,11 @@ function App() {
     }
   }, []);
 
+  const authenticated = (value: string) => {
+    remember(passwordKey, value);
+    setPassword(value);
+  };
+
   return (
     <main>
       <h1>Send audio</h1>
@@ -148,18 +162,28 @@ function App() {
       {roomError && <p className="error">{roomError}</p>}
       {storeError && <p className="error">{storeError}</p>}
       {password === null ? (
-        <PasswordForm onAuthenticated={setPassword} />
+        <PasswordForm onAuthenticated={authenticated} />
       ) : store ? (
-        <Sender store={store} password={password} />
+        <Sender
+          store={store}
+          password={password}
+          onPassword={authenticated}
+          onForget={(active) => {
+            remember(passwordKey, null);
+            // While audio is recording or uploading, keep using it in this tab; it just isn't stored any more.
+            if (!active) setPassword(null);
+          }}
+          onBacklog={setBacklog}
+        />
       ) : (
         !storeError && <p className="muted">Opening local storage…</p>
       )}
-      <TranscriptPreview />
+      <TranscriptPreview paused={backlog > PREVIEW_PAUSE_CHUNKS} />
     </main>
   );
 }
 
-function PasswordForm({ onAuthenticated }: { onAuthenticated(password: string): void }) {
+function PasswordForm({ onAuthenticated, prompt }: { onAuthenticated(password: string): void; prompt?: string }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -172,8 +196,8 @@ function PasswordForm({ onAuthenticated }: { onAuthenticated(password: string): 
         setError(null);
         try {
           if (await checkPassword(value)) {
-            remember(passwordKey, value);
             onAuthenticated(value);
+            setValue("");
           } else {
             setError("Wrong room password");
           }
@@ -184,6 +208,7 @@ function PasswordForm({ onAuthenticated }: { onAuthenticated(password: string): 
         }
       }}
     >
+      {prompt && <p className="sender-warning">{prompt}</p>}
       <label htmlFor="password">Room password</label>
       <div className="row">
         <input
@@ -202,20 +227,47 @@ function PasswordForm({ onAuthenticated }: { onAuthenticated(password: string): 
   );
 }
 
-function Sender({ store, password }: { store: ChunkStore; password: string }) {
+interface Live {
+  recorder: Recorder;
+  /** Local stream id of the segment being recorded now. */
+  current: string | null;
+}
+
+function Sender({
+  store,
+  password,
+  onPassword,
+  onForget,
+  onBacklog,
+}: {
+  store: ChunkStore;
+  password: string;
+  onPassword(password: string): void;
+  onForget(active: boolean): void;
+  onBacklog(chunks: number): void;
+}) {
   useTick(250);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState(() => recall(deviceKey) ?? "");
   const [processing, setProcessing] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+  const [forgotten, setForgotten] = useState(false);
   const [estimate, setEstimate] = useState<StorageEstimate | null>(null);
   const [persisted, setPersisted] = useState<boolean | null>(null);
   const live = useRef<Live | null>(null);
-  /** Streams being uploaded that are no longer recording: stopped here, or left over from an earlier page load. */
-  const background = useRef(new Map<string, StreamUploader>());
+  /** Every stream uploading from this tab, by local id: the live one, finished segments, leftovers from earlier loads. */
+  const uploaders = useRef(new Map<string, StreamUploader>());
+  const passwordRef = useRef(password);
   const level = useRef(0);
   const shownLevel = useRef(0);
+
+  // A new password (after a rotation) goes to every running upload.
+  useEffect(() => {
+    passwordRef.current = password;
+    for (const uploader of uploaders.current.values()) uploader.setPassword(password);
+  }, [password]);
 
   const refreshDevices = useCallback(() => {
     listInputDevices().then(setDevices, () => {});
@@ -238,33 +290,33 @@ function Sender({ store, password }: { store: ChunkStore; password: string }) {
     return () => clearInterval(timer);
   }, []);
 
+  const startUploader = async (stream: StoredStream, elapsed: (() => number) | null) => {
+    const uploader = await StreamUploader.start({
+      store,
+      stream,
+      connect: webSocketFactory(ingestUrl()),
+      password: passwordRef.current,
+      elapsed,
+    });
+    uploaders.current.set(stream.id, uploader);
+    return uploader;
+  };
+
   // Resume unfinished streams for this room: ones left by a reload or crash.
   useEffect(() => {
     let cancelled = false;
     const scan = async () => {
-      const streams = await store.listStreams();
-      for (const stream of streams) {
+      for (const stream of await store.listStreams()) {
         if (cancelled) return;
-        if (stream.roomId !== roomId || background.current.has(stream.id) || live.current?.uploader.streamId === stream.id) {
-          continue;
-        }
-        resume(stream);
-      }
-    };
-    const resume = (stream: StoredStream) => {
-      // Skips streams another open tab still holds (it is recording or uploading them).
-      void withStreamLock(stream.id, false, async () => {
-        if (cancelled) return;
-        const uploader = await StreamUploader.start({
-          store,
-          stream: { ...stream, stopped: true },
-          connect: webSocketFactory(ingestUrl()),
-          password,
-          elapsed: null, // Its start isn't on this page's clock, so leave clock sync alone.
+        if (stream.roomId !== roomId || uploaders.current.has(stream.id)) continue;
+        // Skips streams another open tab still holds (it is recording or uploading them).
+        void withStreamLock(stream.id, false, async () => {
+          if (cancelled || uploaders.current.has(stream.id)) return;
+          // Its start isn't on this page's clock, so leave clock sync alone.
+          const uploader = await startUploader({ ...stream, stopped: true }, null);
+          await uploader.finish();
         });
-        background.current.set(stream.id, uploader);
-        await uploader.finish();
-      });
+      }
     };
     scan().catch((e) => setError(`Could not read local backlog: ${(e as Error).message}`));
     // Look again now and then: a tab that crashed after this one loaded leaves a stream behind too.
@@ -273,74 +325,137 @@ function Sender({ store, password }: { store: ChunkStore; password: string }) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [store, password]);
+  }, [store]);
 
   // Warn before leaving while anything is recording or unsent. (The backlog would survive, but only resume when the page is reopened.)
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      const pending = [...background.current.values()].some((u) => u.status().state !== "done");
+      const pending = [...uploaders.current.values()].some((u) => u.status().state !== "done");
       if (live.current || pending) e.preventDefault();
     };
     addEventListener("beforeunload", handler);
     return () => removeEventListener("beforeunload", handler);
   }, []);
 
+  /** Stops recording (the streams finish uploading in the background). */
+  const stop = async () => {
+    const current = live.current;
+    if (!current) return;
+    live.current = null;
+    await current.recorder.stop();
+  };
+
   const start = async () => {
     setStarting(true);
     setError(null);
+    setWarning(null);
     // Ask for persistent storage so the browser won't evict an unsent backlog under pressure.
     navigator.storage?.persist?.().then(setPersisted, () => {});
-    const streamId = randomStreamId();
-    let uploader: StreamUploader | null = null;
-    const early: Uint8Array[] = [];
-    const save = (payload: Uint8Array) =>
-      uploader!.addChunk(payload).catch((e) => setError(`Could not save audio locally: ${(e as Error).message}`));
+
+    let recorder: Recorder | null = null;
+    let resolveRecorder!: (recorder: Recorder) => void;
+    const recorderReady = new Promise<Recorder>((resolve) => (resolveRecorder = resolve));
+    const fail = (message: string) => {
+      setError(message);
+      void stop();
+      void recorder?.stop();
+    };
+
+    /**
+     * Where one segment's chunks go. Recording doesn't wait for any of this:
+     * chunks that arrive before the uploader exists queue in `early`.
+     */
+    let currentStream: string | null = null;
+    const segments = new Map<number, { early: [number, Uint8Array][]; uploader: StreamUploader | null; ended: boolean }>();
+    const save = (uploader: StreamUploader, seq: number, payload: Uint8Array) =>
+      uploader.addChunk(seq, payload).catch((e) => fail(`Could not record audio: ${(e as Error).message}`));
+
+    const openSegment = (segment: number) => {
+      const sink = { early: [] as [number, Uint8Array][], uploader: null as StreamUploader | null, ended: false };
+      segments.set(segment, sink);
+      const streamId = randomStreamId();
+      currentStream = streamId;
+      if (live.current?.recorder === recorder) live.current.current = streamId;
+      void (async () => {
+        const rec = await recorderReady;
+        let releaseLock!: () => void;
+        const lockReleased = new Promise<void>((resolve) => (releaseLock = resolve));
+        try {
+          await withStreamLock(streamId, true, () => lockReleased);
+          const stream: StoredStream = { id: streamId, roomId, format: rec.format, createdAt: Date.now(), stopped: false };
+          const uploader = await startUploader(stream, () => rec.elapsed(segment));
+          void uploader.whenDone().then(releaseLock);
+          sink.uploader = uploader;
+          for (const [seq, payload] of sink.early.splice(0)) void save(uploader, seq, payload);
+          if (sink.ended) void uploader.finish();
+        } catch (e) {
+          releaseLock();
+          fail(`Could not set up local storage for recording: ${(e as Error).message}`);
+        }
+      })();
+    };
+
     try {
-      // Recording starts here, before anything touches the network; chunks
-      // that arrive before the uploader exists wait in `early`.
-      const recorder = await Recorder.start({
+      // Recording starts here, before anything touches the network.
+      recorder = await Recorder.start({
         deviceId: deviceId || undefined,
         processing,
-        onChunk: (_seq, payload) => (uploader ? save(payload) : early.push(payload)),
+        onSegmentStart: openSegment,
+        onChunk: (segment, seq, payload) => {
+          const sink = segments.get(segment);
+          if (!sink) return;
+          if (sink.uploader) void save(sink.uploader, seq, payload);
+          else sink.early.push([seq, payload]);
+        },
+        onSegmentEnd: (segment) => {
+          const sink = segments.get(segment);
+          if (!sink) return;
+          sink.ended = true;
+          // addChunk calls are queued in order, so finishing after them uploads every chunk first.
+          if (sink.uploader) void sink.uploader.finish();
+        },
         onLevel: (peak) => (level.current = Math.max(level.current, peak)),
-        onError: (e) => setError(e.message),
+        onWarning: setWarning,
+        onEnded: (e) => {
+          live.current = null;
+          setError(`${e.message}. Recording stopped; what was recorded is still being uploaded. Press Start to record again.`);
+        },
       });
+      live.current = { recorder, current: currentStream };
+      resolveRecorder(recorder);
       refreshDevices(); // Labels become available once permission is granted.
-      let releaseLock!: () => void;
-      const lockReleased = new Promise<void>((resolve) => (releaseLock = resolve));
-      await withStreamLock(streamId, true, () => lockReleased);
-      const stream: StoredStream = { id: streamId, roomId, format: recorder.format, createdAt: Date.now(), stopped: false };
-      uploader = await StreamUploader.start({
-        store,
-        stream,
-        connect: webSocketFactory(ingestUrl()),
-        password,
-        elapsed: () => recorder.elapsed(),
-      });
-      early.splice(0).forEach(save);
-      live.current = { recorder, uploader };
-      void uploader.whenDone().then(releaseLock);
     } catch (e) {
+      // Don't leave the mic on if anything after getUserMedia failed.
+      await recorder?.stop();
+      live.current = null;
       setError((e as Error).message);
     } finally {
       setStarting(false);
     }
   };
 
-  const stop = async () => {
-    const current = live.current;
-    if (!current) return;
-    live.current = null;
-    background.current.set(current.uploader.streamId, current.uploader);
-    await current.recorder.stop();
-    await current.uploader.finish();
-  };
+  const all = [...uploaders.current.values()];
+  const currentId = live.current?.current ?? null;
+  const current = currentId ? (uploaders.current.get(currentId) ?? null) : null;
+  const status = current?.status() ?? null;
+  const others = all.filter((u) => u !== current).map((u) => u.status()).filter((s) => s.state !== "done");
+  const statuses = [...(status ? [status] : []), ...others];
+  const backlogChunks = statuses.reduce((n, s) => n + s.backlogChunks, 0);
+  const backlogBytes = statuses.reduce((n, s) => n + s.backlogBytes, 0);
+  const quota = storageWarning(estimate);
+  const unauthorized = statuses.some((s) => s.state === "unauthorized");
+  const storageError = statuses.find((s) => s.storageError)?.storageError;
 
-  const status = live.current?.uploader.status() ?? null;
-  const others = [...background.current.values()].map((u) => u.status()).filter((s) => s.state !== "done");
-  const backlogChunks = (status?.backlogChunks ?? 0) + others.reduce((n, s) => n + s.backlogChunks, 0);
-  const backlogBytes = (status?.backlogBytes ?? 0) + others.reduce((n, s) => n + s.backlogBytes, 0);
-  const warning = storageWarning(estimate);
+  useEffect(() => onBacklog(backlogChunks));
+
+  // A room deleted mid-recording: there is nowhere to send audio any more.
+  const roomGone = status?.state === "gone";
+  useEffect(() => {
+    if (roomGone && live.current) {
+      void stop();
+      setError("This room no longer exists on the server. Recording stopped.");
+    }
+  }, [roomGone]);
 
   // Show the loudest peak since the last render, falling back gently so short sounds stay visible.
   const peak = Math.max(level.current, shownLevel.current * 0.6);
@@ -348,9 +463,16 @@ function Sender({ store, password }: { store: ChunkStore; password: string }) {
   level.current = 0;
   const db = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
   const meter = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+  const active = !!live.current || others.length > 0;
 
   return (
     <>
+      {unauthorized && (
+        <PasswordForm
+          prompt="The server rejected the room password (it may have been changed). Recording continues and is kept locally; enter the new password to resume uploading."
+          onAuthenticated={onPassword}
+        />
+      )}
       <section className="card">
         <div className="row spread">
           <div className="row">
@@ -398,8 +520,11 @@ function Sender({ store, password }: { store: ChunkStore; password: string }) {
           <div style={{ width: `${live.current ? meter : 0}%` }} />
         </div>
         {error && <p className="error">{error}</p>}
-        {status?.lastError && <p className="error">Server: {status.lastError}</p>}
-        {warning && <p className="sender-warning">{warning.message}</p>}
+        {storageError && <p className="error">{storageError}</p>}
+        {warning && live.current && <p className="sender-warning">{warning}</p>}
+        {status?.lastError && status.state !== "connected" && <p className="error">Server: {status.lastError}</p>}
+        {status?.notice && <p className="sender-warning">{status.notice}</p>}
+        {quota && <p className="sender-warning">{quota.message}</p>}
       </section>
 
       <section className="stat">
@@ -426,7 +551,7 @@ function Sender({ store, password }: { store: ChunkStore; password: string }) {
         </div>
       </section>
       <p className="muted sender-ids">
-        Stream: <code>{status?.streamId ?? "–"}</code>
+        Stream: <code>{status?.wireStreamId ?? "–"}</code>
         {live.current && <> · format: {live.current.recorder.format}</>}
       </p>
 
@@ -436,51 +561,126 @@ function Sender({ store, password }: { store: ChunkStore; password: string }) {
           {others.map((s) => (
             <div className="row" key={s.streamId}>
               {stateBadge(s)}
-              <code>{s.streamId}</code>
+              <code>{s.wireStreamId}</code>
               <span className="muted">
                 {s.backlogChunks} chunks ({formatDuration(s.backlogChunks * CHUNK_MS)}) · {formatBytes(s.backlogBytes)} left
               </span>
               {s.lastError && <span className="error">{s.lastError}</span>}
+              {s.notice && <span className="sender-warning">{s.notice}</span>}
+              {s.state === "gone" && (
+                <button
+                  className="danger"
+                  onClick={() => {
+                    if (confirm("The room is gone, so this audio can't be uploaded. Delete it from this browser?")) {
+                      void uploaders.current.get(s.streamId)?.discard();
+                    }
+                  }}
+                >
+                  Discard local backlog
+                </button>
+              )}
             </div>
           ))}
         </section>
       )}
+
+      <p className="sender-ids">
+        {forgotten ? (
+          <span className="muted">This browser no longer remembers the room password.</span>
+        ) : (
+          <button
+            onClick={() => {
+              setForgotten(true);
+              onForget(active);
+            }}
+          >
+            Forget password on this browser
+          </button>
+        )}
+      </p>
     </>
   );
 }
 
-interface TranscriptJson {
-  segments: { id: string; text: string }[];
-  partials: LivePartial[];
-}
+/** Only the newest few segments are kept for the preview. */
+const PREVIEW_SEGMENTS = 4;
 
-/** A small read-back of the live transcript, so the crew can see transcription is working. */
-function TranscriptPreview() {
-  const [data, setData] = useState<TranscriptJson | null>(null);
+/**
+ * A small read-back of the live transcript, so the crew can see transcription
+ * is working. Loads one snapshot, then polls only the events since it.
+ */
+function TranscriptPreview({ paused }: { paused: boolean }) {
+  const transcript = useRef<TranscriptState | null>(null);
+  const [view, setView] = useState<{ segments: { id: string; text: string }[]; partials: LivePartial[] } | null>(null);
+
   useEffect(() => {
+    if (paused) return;
     let cancelled = false;
-    const poll = () =>
-      fetch(`/api/rooms/${encodeURIComponent(roomId)}/transcript.json`)
-        .then((res) => (res.ok ? res.json() : null))
-        .then((json) => !cancelled && json && setData(json))
-        .catch(() => {});
-    poll();
-    const timer = setInterval(poll, 2000);
+    const base = `/api/rooms/${encodeURIComponent(roomId)}`;
+    const trim = (state: TranscriptState) => {
+      // Edits to dropped segments are ignored by applyEvent, so keeping only the newest is safe.
+      const keep = new Set(
+        orderedSegments(state)
+          .slice(-PREVIEW_SEGMENTS * 2)
+          .map((s) => s.id),
+      );
+      for (const id of Object.keys(state.segments)) if (!keep.has(id)) delete state.segments[id];
+    };
+    const poll = async () => {
+      let partials: LivePartial[];
+      if (!transcript.current) {
+        const res = await fetch(base);
+        if (!res.ok) return;
+        const snapshot = (await res.json()) as { transcript: TranscriptState; partials: LivePartial[] };
+        transcript.current = snapshot.transcript;
+        partials = snapshot.partials;
+      } else {
+        const res = await fetch(`${base}/events?after=${transcript.current.seq}`);
+        if (!res.ok) return;
+        const body = (await res.json()) as { events: RoomEvent[]; seq: number; partials: LivePartial[] };
+        if (body.seq < transcript.current.seq) {
+          transcript.current = null; // The log went backwards (room recreated?): start over.
+          return;
+        }
+        for (const event of body.events) {
+          if (event.seq === transcript.current.seq + 1) applyEvent(transcript.current, event);
+        }
+        // Missed events (a gap): take a fresh snapshot next time.
+        if (transcript.current.seq < body.seq && body.events.length === 0) transcript.current = null;
+        partials = body.partials;
+      }
+      const state = transcript.current;
+      if (!state || cancelled) return;
+      trim(state);
+      setView({
+        segments: orderedSegments(state)
+          .slice(-PREVIEW_SEGMENTS)
+          .map((s) => ({ id: s.id, text: s.text })),
+        partials,
+      });
+    };
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => {
+      await poll().catch(() => {});
+      if (!cancelled) timer = setTimeout(loop, 2000);
+    };
+    void loop();
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
-  }, []);
-  if (!data) return null;
-  const segments = data.segments.slice(-4);
+  }, [paused]);
+
+  if (!view) return null;
   return (
     <section className="card sender-transcript">
       <h2 className="sender-h2">Live transcript</h2>
-      {segments.length === 0 && data.partials.length === 0 && <p className="muted">Nothing transcribed yet.</p>}
-      {segments.map((s) => (
+      {paused && <p className="muted">Paused while the audio backlog uploads.</p>}
+      {view.segments.length === 0 && view.partials.length === 0 && <p className="muted">Nothing transcribed yet.</p>}
+      {view.segments.map((s) => (
         <p key={s.id}>{s.text}</p>
       ))}
-      {data.partials.map((p) => (
+      {view.partials.map((p) => (
         <p key={`${p.streamId}:${p.startMs}`} className="partial">
           {p.text}
         </p>

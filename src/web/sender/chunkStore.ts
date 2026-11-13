@@ -16,6 +16,12 @@ export interface StoredStream {
   createdAt: number;
   /** Recording stopped (or the tab that recorded it is gone): no more chunks will be added. */
   stopped: boolean;
+  /**
+   * Set after the server lost data: the stream id the server knows this audio
+   * by from now on, and the local seq that is chunk 0 of it.
+   */
+  wireId?: string;
+  wireBase?: number;
 }
 
 export interface StoredChunk {
