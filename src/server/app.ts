@@ -166,7 +166,7 @@ export function startApp(options: AppOptions): App {
       "/api/rooms/:roomId/events": withRoom((req, room) => {
         const after = Number(new URL(req.url).searchParams.get("after") ?? 0);
         const events = rooms.eventsSince(room.id, after);
-        return json({ events, seq: rooms.getTranscript(room.id).seq });
+        return json({ events, seq: rooms.getTranscript(room.id).seq, partials: rooms.getPartials(room.id) });
       }),
 
       "/api/rooms/:roomId/transcript.txt": withRoom(

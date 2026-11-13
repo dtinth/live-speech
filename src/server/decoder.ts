@@ -20,8 +20,12 @@ export function createChunkDecoder(format: AudioFormat): ChunkDecoder {
   const opus = new OpusScript(SAMPLE_RATE, 1, OpusScript.Application.VOIP, { wasm: true });
   return {
     decode(chunk) {
+      const packets = unpackOpusPackets(chunk);
+      // A chunk with no packets (the encoder dropped frames) still covers
+      // 100 ms of the stream; keep later offsets right by decoding it as silence.
+      if (packets.length === 0) return new Uint8Array(PCM_CHUNK_BYTES);
       const parts: Uint8Array[] = [];
-      for (const packet of unpackOpusPackets(chunk)) {
+      for (const packet of packets) {
         try {
           parts.push(new Uint8Array(opus.decode(Buffer.from(packet))));
         } catch {

@@ -15,7 +15,9 @@ export interface Config {
   catchUpSpeed: number;
 }
 
-export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+export function loadConfig(rawEnv: Record<string, string | undefined> = process.env): Config {
+  // Treat empty values (as left in .env.example) as unset.
+  const env = Object.fromEntries(Object.entries(rawEnv).filter(([, v]) => v !== undefined && v.trim() !== ""));
   const masterPassword = env.MASTER_PASSWORD ?? "";
   if (!masterPassword) throw new Error("MASTER_PASSWORD must be set");
   const provider = (env.TRANSCRIPTION_PROVIDER ?? (env.DASHSCOPE_API_KEY ? "qwen" : "fake")) as Config["provider"];

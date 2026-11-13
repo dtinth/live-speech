@@ -1,0 +1,51 @@
+/* Sender-only styles; shared tokens and components live in styles.css. */
+
+.sender-meter {
+  height: 10px;
+  margin-top: 14px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.sender-meter > div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--ok) 0 70%, var(--warn) 70% 90%, var(--danger) 90%);
+  background-size: 100vw 100%;
+  transition: width 120ms linear;
+}
+
+.sender-rec {
+  animation: sender-blink 1.2s steps(2, start) infinite;
+}
+
+@keyframes sender-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+.sender-check {
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+.sender-warning {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.sender-ids {
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+
+.sender-h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.sender-transcript p {
+  margin: 4px 0;
+}

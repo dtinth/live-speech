@@ -1,0 +1,117 @@
+.viewer-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 0;
+  margin-bottom: 12px;
+}
+
+.viewer-header h1 {
+  display: inline;
+  margin-right: 10px;
+}
+
+a.button {
+  display: inline-block;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 14px;
+  text-decoration: none;
+}
+
+.transcript {
+  font-size: 1.15rem;
+}
+
+.segment {
+  display: grid;
+  grid-template-columns: 5.5em 1fr;
+  gap: 4px 12px;
+  margin: 0 0 10px;
+}
+
+.segment .time {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  padding-top: 0.3em;
+}
+
+.segment .edited {
+  grid-column: 2;
+  font-size: 0.8rem;
+}
+
+.segment.editable {
+  cursor: text;
+  border-radius: 6px;
+}
+
+.segment.editable:hover {
+  background: var(--surface);
+  outline: 1px dashed var(--border);
+}
+
+.segment.editing {
+  display: block;
+}
+
+.history {
+  font-size: 0.9rem;
+  padding-left: 1.2em;
+}
+
+.jump {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
+}
+
+.agent-help {
+  margin-top: 40px;
+}
+
+.agent-help summary {
+  cursor: pointer;
+}
+
+.agent-help h3 {
+  font-size: 1rem;
+  margin: 16px 0 6px;
+}
+
+.captions {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  color: #fff;
+  /* Bottom-aligned; older lines overflow off the top and are clipped. */
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  padding: 4vh 5vw;
+}
+
+.captions-text {
+  font-size: clamp(28px, 5.2vw, 72px);
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.captions .partial {
+  color: #b9b9b9;
+}
+
+@media (max-width: 560px) {
+  .segment {
+    grid-template-columns: 1fr;
+  }
+}

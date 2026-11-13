@@ -1,1 +1,35 @@
-<!doctype html><title>admin</title>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>live-speech admin</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%F0%9F%92%AC%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css" />
+    <style>
+      .streams {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        font-size: 0.92rem;
+        display: block;
+        overflow-x: auto;
+      }
+      .streams th,
+      .streams td {
+        text-align: left;
+        padding: 6px 10px 6px 0;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+      .streams th {
+        color: var(--muted);
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./admin.tsx"></script>
+  </body>
+</html>

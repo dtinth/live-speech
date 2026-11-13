@@ -17,7 +17,7 @@ const app = startApp({
   sockudoClient: config.sockudo?.client ?? null,
   transcriber: { catchUpSpeed: config.catchUpSpeed },
   pages: { admin, viewer, sender },
-  development: process.env.NODE_ENV !== "production",
+  development: process.env.NODE_ENV === "development",
 });
 console.log(`live-speech listening on ${app.url} (provider: ${config.provider}, sockudo: ${config.sockudo ? "on" : "off"})`);
 

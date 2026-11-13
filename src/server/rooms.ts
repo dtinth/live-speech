@@ -181,7 +181,7 @@ export class RoomService {
     const byteLength = this.audio.append(stream.roomId, stream.id, current.byteLength, fresh);
     const chunkCount = current.chunkCount + fresh.length;
     this.db
-      .query("UPDATE streams SET chunk_count = ?, byte_length = ?, ended = 0 WHERE id = ?")
+      .query("UPDATE streams SET chunk_count = ?, byte_length = ? WHERE id = ?")
       .run(chunkCount, byteLength, stream.id);
     return chunkCount;
   }
