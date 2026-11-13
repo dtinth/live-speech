@@ -21,13 +21,19 @@ CREATE TABLE IF NOT EXISTS streams (
   clock_rtt INTEGER,
   -- Chunks durably stored: every seq below this is on disk.
   chunk_count INTEGER NOT NULL DEFAULT 0,
-  -- Bytes of the stream file that hold those chunks.
-  byte_length INTEGER NOT NULL DEFAULT 0,
   -- Chunks below this have been transcribed and their segments logged.
   transcribed_until INTEGER NOT NULL DEFAULT 0,
   ended INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS streams_room ON streams(room_id);
+
+-- Audio exactly as the sender encoded it, one row per 100 ms chunk.
+CREATE TABLE IF NOT EXISTS chunks (
+  stream_id TEXT NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  payload BLOB NOT NULL,
+  PRIMARY KEY (stream_id, seq)
+);
 
 -- Append-only log. Every transcript state is a fold over this table.
 CREATE TABLE IF NOT EXISTS events (
@@ -43,6 +49,8 @@ CREATE TABLE IF NOT EXISTS events (
 export function openDatabase(dataDir: string): Database {
   mkdirSync(dataDir, { recursive: true });
   const db = new Database(join(dataDir, "live-speech.sqlite"), { create: true, strict: true });
+  // Must precede table creation; lets deleting a room give space back.
+  db.exec("PRAGMA auto_vacuum = INCREMENTAL");
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
   db.exec("PRAGMA foreign_keys = ON");

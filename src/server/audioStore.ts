@@ -1,76 +1,31 @@
-import { closeSync, ftruncateSync, mkdirSync, openSync, readSync, rmSync, writeSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import type { Database } from "bun:sqlite";
 
 /**
- * Stores a stream's chunks on disk exactly as received, in one append-only
- * file per stream. Each record is a little-endian u32 seq, a u32 length, then
- * the payload. The database records how many chunks (and bytes) are durable;
- * anything past that after a crash is truncated away on the next append.
+ * Stores each stream's chunks exactly as received (Opus packets or PCM), one
+ * row per 100 ms chunk, in the same SQLite database as everything else. At
+ * ~400 bytes per Opus chunk that is ~15 MB per hour, and keeping it in SQLite
+ * means a chunk and the stream's chunk count commit in one transaction.
  */
 export class AudioStore {
-  constructor(private readonly dir: string) {}
+  constructor(private readonly db: Database) {}
 
-  private path(roomId: string, streamId: string) {
-    return join(this.dir, roomId, `${streamId}.chunks`);
+  /** Inserts chunks; the caller wraps this in a transaction with its bookkeeping. */
+  insert(streamId: string, chunks: { seq: number; payload: Uint8Array }[]) {
+    const statement = this.db.query("INSERT INTO chunks (stream_id, seq, payload) VALUES (?, ?, ?)");
+    for (const { seq, payload } of chunks) statement.run(streamId, seq, payload);
   }
 
-  /** Appends chunks starting at `byteLength`; returns the new byte length. */
-  append(roomId: string, streamId: string, byteLength: number, chunks: { seq: number; payload: Uint8Array }[]): number {
-    mkdirSync(join(this.dir, roomId), { recursive: true });
-    const fd = openSync(this.path(roomId, streamId), "a+");
-    try {
-      ftruncateSync(fd, byteLength);
-      let offset = byteLength;
-      for (const { seq, payload } of chunks) {
-        const header = new Uint8Array(8);
-        const view = new DataView(header.buffer);
-        view.setUint32(0, seq, true);
-        view.setUint32(4, payload.byteLength, true);
-        writeSync(fd, header, 0, 8, offset);
-        writeSync(fd, payload, 0, payload.byteLength, offset + 8);
-        offset += 8 + payload.byteLength;
-      }
-      return offset;
-    } finally {
-      closeSync(fd);
+  /** Chunks with `fromSeq <= seq < toSeq`, in order, fetched in pages. */
+  *read(streamId: string, { fromSeq = 0, toSeq = Number.MAX_SAFE_INTEGER } = {}): Generator<{ seq: number; payload: Uint8Array }> {
+    const page = this.db.query<{ seq: number; payload: Uint8Array }, [string, number, number]>(
+      "SELECT seq, payload FROM chunks WHERE stream_id = ? AND seq >= ? AND seq < ? ORDER BY seq LIMIT 500",
+    );
+    let next = fromSeq;
+    for (;;) {
+      const rows = page.all(streamId, next, toSeq);
+      for (const row of rows) yield row;
+      if (rows.length < 500) return;
+      next = rows[rows.length - 1]!.seq + 1;
     }
-  }
-
-  /**
-   * Reads chunks with `fromSeq <= seq < toSeq`, scanning from `startOffset`
-   * (a record boundary, e.g. a previous `nextOffset`) up to `byteLength`.
-   */
-  *read(
-    roomId: string,
-    streamId: string,
-    byteLength: number,
-    { fromSeq = 0, toSeq = Infinity, startOffset = 0 } = {},
-  ): Generator<{ seq: number; payload: Uint8Array; nextOffset: number }> {
-    const path = this.path(roomId, streamId);
-    if (!existsSync(path)) return;
-    const fd = openSync(path, "r");
-    try {
-      let offset = startOffset;
-      const header = new Uint8Array(8);
-      const view = new DataView(header.buffer);
-      while (offset + 8 <= byteLength) {
-        readSync(fd, header, 0, 8, offset);
-        const seq = view.getUint32(0, true);
-        const length = view.getUint32(4, true);
-        if (seq >= toSeq) return;
-        if (seq >= fromSeq) {
-          const payload = new Uint8Array(length);
-          readSync(fd, payload, 0, length, offset + 8);
-          yield { seq, payload, nextOffset: offset + 8 + length };
-        }
-        offset += 8 + length;
-      }
-    } finally {
-      closeSync(fd);
-    }
-  }
-
-  deleteRoom(roomId: string) {
-    rmSync(join(this.dir, roomId), { recursive: true, force: true });
   }
 }

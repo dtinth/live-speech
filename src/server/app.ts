@@ -11,7 +11,6 @@ import { RoomService, safeEqual, type Room } from "./rooms.ts";
 import { Transcriber, type TranscriberOptions } from "./transcriber.ts";
 import type { TranscriptionProvider } from "./transcription/provider.ts";
 import { wavHeader } from "./wav.ts";
-import { join } from "node:path";
 
 export interface AppOptions {
   port: number;
@@ -46,7 +45,7 @@ function bearer(req: Request) {
 
 export function startApp(options: AppOptions): App {
   const db = openDatabase(options.dataDir);
-  const audio = new AudioStore(join(options.dataDir, "audio"));
+  const audio = new AudioStore(db);
   const rooms = new RoomService(db, audio, options.publisher);
   const transcriber = new Transcriber(rooms, audio, options.provider, {
     catchUpSpeed: 1.5,
@@ -201,7 +200,7 @@ export function startApp(options: AppOptions): App {
         // costs a few ms of warm-up, which is fine for listening back.
         const decoder = createChunkDecoder(stream.format);
         const parts: Uint8Array[] = [];
-        for (const chunk of audio.read(room.id, stream.id, stream.byteLength, { fromSeq, toSeq })) {
+        for (const chunk of audio.read(stream.id, { fromSeq, toSeq })) {
           parts.push(decoder.decode(chunk.payload));
         }
         decoder.dispose();

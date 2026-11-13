@@ -72,9 +72,8 @@ class StreamWorker {
   private decoder: ChunkDecoder | null = null;
   /** Chunk seq the current session began at; provider offsets are relative to it. */
   private baseSeq = 0;
-  /** Next chunk to feed, and where it starts in the stream file. */
+  /** Next chunk to feed. */
   private nextSeq = 0;
-  private nextOffset = 0;
   private sessionStartedAt = 0;
   private fedInSession = 0;
   private lastFedAt = 0;
@@ -144,13 +143,10 @@ class StreamWorker {
         : Math.floor(((now - this.sessionStartedAt) * this.options.catchUpSpeed) / CHUNK_MS) + 1 - this.fedInSession;
     let fed = 0;
     if (budget > 0 && this.nextSeq < stream.chunkCount) {
-      for (const chunk of this.audio.read(stream.roomId, stream.id, stream.byteLength, {
-        fromSeq: this.nextSeq,
-        startOffset: this.nextOffset,
-      })) {
+      const toSeq = budget === Infinity ? stream.chunkCount : Math.min(stream.chunkCount, this.nextSeq + budget);
+      for (const chunk of this.audio.read(stream.id, { fromSeq: this.nextSeq, toSeq })) {
         this.session!.sendAudio(this.decoder!.decode(chunk.payload));
         this.nextSeq = chunk.seq + 1;
-        this.nextOffset = chunk.nextOffset;
         this.fedInSession++;
         if (++fed >= budget) break;
       }
@@ -174,7 +170,6 @@ class StreamWorker {
     const stream = this.rooms.getStream(this.streamId)!;
     this.baseSeq = fromSeq;
     this.nextSeq = fromSeq;
-    this.nextOffset = 0; // read() skips to fromSeq on the first pass
     this.sessionStartedAt = performance.now();
     this.lastFedAt = this.sessionStartedAt;
     this.fedInSession = 0;

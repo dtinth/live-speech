@@ -27,7 +27,6 @@ export interface StreamRecord {
   startedAt: number | null;
   clockRtt: number | null;
   chunkCount: number;
-  byteLength: number;
   transcribedUntil: number;
   ended: boolean;
 }
@@ -55,7 +54,6 @@ interface StreamRow {
   started_at: number | null;
   clock_rtt: number | null;
   chunk_count: number;
-  byte_length: number;
   transcribed_until: number;
   ended: number;
 }
@@ -69,7 +67,6 @@ function toStream(row: StreamRow): StreamRecord {
     startedAt: row.started_at,
     clockRtt: row.clock_rtt,
     chunkCount: row.chunk_count,
-    byteLength: row.byte_length,
     transcribedUntil: row.transcribed_until,
     ended: !!row.ended,
   };
@@ -132,11 +129,13 @@ export class RoomService {
 
   deleteRoom(roomId: string) {
     this.db.transaction(() => {
+      this.db.query("DELETE FROM chunks WHERE stream_id IN (SELECT id FROM streams WHERE room_id = ?)").run(roomId);
       this.db.query("DELETE FROM events WHERE room_id = ?").run(roomId);
       this.db.query("DELETE FROM streams WHERE room_id = ?").run(roomId);
       this.db.query("DELETE FROM rooms WHERE id = ?").run(roomId);
     })();
-    this.audio.deleteRoom(roomId);
+    // Return the freed pages to the filesystem.
+    this.db.exec("PRAGMA incremental_vacuum");
     this.transcripts.delete(roomId);
     this.partials.delete(roomId);
   }
@@ -172,18 +171,18 @@ export class RoomService {
 
   /** Durably stores chunks `next, next+1, …` and returns the new chunk count. */
   appendChunks(stream: StreamRecord, chunks: { seq: number; payload: Uint8Array }[]): number {
-    const current = this.getStream(stream.id)!;
-    const fresh = chunks.filter((c) => c.seq >= current.chunkCount);
-    if (fresh.length === 0) return current.chunkCount;
-    fresh.forEach((c, i) => {
-      if (c.seq !== current.chunkCount + i) throw new Error(`Gap: expected chunk ${current.chunkCount + i}, got ${c.seq}`);
-    });
-    const byteLength = this.audio.append(stream.roomId, stream.id, current.byteLength, fresh);
-    const chunkCount = current.chunkCount + fresh.length;
-    this.db
-      .query("UPDATE streams SET chunk_count = ?, byte_length = ? WHERE id = ?")
-      .run(chunkCount, byteLength, stream.id);
-    return chunkCount;
+    return this.db.transaction(() => {
+      const current = this.getStream(stream.id)!;
+      const fresh = chunks.filter((c) => c.seq >= current.chunkCount);
+      if (fresh.length === 0) return current.chunkCount;
+      fresh.forEach((c, i) => {
+        if (c.seq !== current.chunkCount + i) throw new Error(`Gap: expected chunk ${current.chunkCount + i}, got ${c.seq}`);
+      });
+      this.audio.insert(stream.id, fresh);
+      const chunkCount = current.chunkCount + fresh.length;
+      this.db.query("UPDATE streams SET chunk_count = ? WHERE id = ?").run(chunkCount, stream.id);
+      return chunkCount;
+    })();
   }
 
   /** Records a clock-sync sample; keeps it only if its round trip beats the best so far. */
