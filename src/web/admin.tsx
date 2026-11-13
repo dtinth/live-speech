@@ -416,7 +416,7 @@ const CSS_HELP: [string, string][] = [
   ['body[data-mode="captions"]', "Only in captions (fullscreen) mode."],
   [".viewer-header", "Top bar: .room-name (the title), .status (Live badge) and the buttons."],
   [".transcript", "The list of segments."],
-  [".segment", "One line of the transcript. Inside: .time and .text."],
+  [".segment", "One line of the transcript. Inside: .time, .text, and .edited (the “(edited)” mark)."],
   [".segment.partial", "Text still being recognized (not final yet)."],
   [".captions", "Captions mode backdrop."],
   [".captions-text", "Captions text: the last few segments, then a .partial span."],
